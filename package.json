@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "setup-db": "node setup-database.js",
-    "configure": "node configure.js"
+    "configure": "node configure.js",
+    "set-password": "node set-password.js"
   },
   "keywords": [
     "discord",
