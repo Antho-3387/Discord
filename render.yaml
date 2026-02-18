@@ -3,7 +3,7 @@ services:
     name: discord-clone
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm rebuild --build-from-source
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
