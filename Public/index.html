@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Discord Clone</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+  <!-- Modal de connexion -->
+  <div id="loginModal" class="modal active">
+    <div class="modal-content">
+      <h1>🎮 Discord Clone</h1>
+      <p id="loginSubtitle">Connectez-vous pour continuer</p>
+      <div class="login-form">
+        <input 
+          type="text" 
+          id="usernameInput" 
+          placeholder="Nom d'utilisateur" 
+          maxlength="20"
+        >
+        <input 
+          type="password" 
+          id="passwordInput" 
+          placeholder="Mot de passe" 
+          maxlength="50"
+        >
+        <button id="loginBtn" onclick="login()">Se connecter</button>
+      </div>
+      <div id="loginError" class="error-message"></div>
+      <div class="auth-switch">
+        <span id="authSwitchText">Pas encore de compte ?</span>
+        <button id="authSwitchBtn" onclick="toggleAuthMode()">Créer un compte</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Interface principale -->
+  <div id="mainInterface" class="hidden">
+    <!-- Sidebar gauche -->
+    <aside class="sidebar">
+      <div class="server-icon">
+        <span>🎮</span>
+      </div>
+
+      <div class="channels-container">
+        <div class="channels-header channels-header-dual">
+          <div class="header-section">
+            <h3>CATÉGORIES</h3>
+            <button id="createCategoryHeaderBtn" class="add-btn" title="Ajouter une catégorie">+</button>
+          </div>
+          <div class="header-section">
+            <h3>SALONS</h3>
+            <button id="addChannelBtn" class="add-btn" title="Ajouter un canal">+</button>
+          </div>
+        </div>
+
+        <div class="channels-lists-wrapper">
+          <ul id="categoriesList" class="channels-list">
+            <!-- Les catégories seront insérées ici dynamiquement -->
+          </ul>
+
+          <ul id="channelsList" class="channels-list">
+          <!-- Les salons seront insérés ici dynamiquement -->
+        </ul>
+        </div>
+      </div>
+
+      <div class="user-info">
+        <div class="user-avatar" id="userAvatarDisplay">👤</div>
+        <div class="user-details">
+          <span id="currentUsername" class="username">Utilisateur</span>
+          <button id="logoutBtn" class="logout-btn">Déconnexion</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Zone de chat -->
+    <main class="chat-container">
+      <!-- En-tête du canal -->
+      <header class="channel-header">
+        <div class="channel-info">
+          <span id="channelName" class="channel-name"># general</span>
+          <span id="channelDescription" class="channel-description">Salon général pour discuter</span>
+        </div>
+        <div class="header-icons">
+          <span title="Utilisateurs en ligne">👥 <span id="onlineCount">1</span></span>
+        </div>
+      </header>
+
+      <!-- Zone des messages -->
+      <div id="messagesContainer" class="messages-container">
+        <!-- Les messages seront insérés ici dynamiquement -->
+      </div>
+
+      <!-- Barre d'entrée de message -->
+      <footer class="message-input-footer">
+        <div class="message-input-wrapper">
+          <input
+            type="text"
+            id="messageInput"
+            placeholder="Tapez un message..."
+            maxlength="2000"
+          >
+          <input
+            type="file"
+            id="imageInput"
+            accept="image/*"
+            style="display: none;"
+          />
+          <button class="image-btn" onclick="document.getElementById('imageInput').click()" title="Envoyer une image">🖼️</button>
+          <button id="sendBtn" class="send-btn" onclick="sendMessage()">📤</button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Modal de création de canal -->
+  <div id="createChannelModal" class="modal">
+    <div class="modal-content">
+      <h2>Créer un nouveau salon</h2>
+      <input
+        type="text"
+        id="newChannelInput"
+        placeholder="Nom du salon..."
+        maxlength="30"
+      >
+      <div class="modal-buttons">
+        <button onclick="createChannel()" class="btn-primary">Créer</button>
+        <button onclick="closeCreateChannelModal()" class="btn-secondary">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de gestion du salon (édition/suppression) -->
+  <div id="channelManageModal" class="modal">
+    <div class="modal-content">
+      <h2>Gérer le salon</h2>
+      <div id="channelManageOptions">
+        <button onclick="openRenameChannel()" class="btn-primary" style="margin-bottom: 10px; width: 100%;">✏️ Renommer</button>
+        <button onclick="openDeleteChannel()" class="btn-danger" style="width: 100%;">🗑️ Supprimer</button>
+      </div>
+      <div id="renameChannelForm" style="display: none;">
+        <input
+          type="text"
+          id="renameChannelInput"
+          placeholder="Nouveau nom du salon..."
+          maxlength="30"
+        >
+        <div class="modal-buttons">
+          <button onclick="confirmRenameChannel()" class="btn-primary">Renommer</button>
+          <button onclick="cancelRenameChannel()" class="btn-secondary">Annuler</button>
+        </div>
+      </div>
+      <div id="deleteChannelConfirm" style="display: none;">
+        <p style="color: var(--danger-color); margin-bottom: 15px;">⚠️ Êtes-vous sûr ? Cette action est irréversible.</p>
+        <div class="modal-buttons">
+          <button onclick="confirmDeleteChannel()" class="btn-danger">Supprimer</button>
+          <button onclick="cancelDeleteChannel()" class="btn-secondary">Annuler</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de gestion de catégories (édition/suppression) -->
+  <div id="categoryManageModal" class="modal">
+    <div class="modal-content">
+      <h2>Gérer la catégorie</h2>
+      <div id="categoryManageOptions">
+        <button onclick="openRenameCategory()" class="btn-primary" style="margin-bottom: 10px; width: 100%;">✏️ Renommer</button>
+        <button onclick="openDeleteCategory()" class="btn-danger" style="width: 100%;">🗑️ Supprimer</button>
+      </div>
+      <div id="renameCategoryForm" style="display: none;">
+        <input
+          type="text"
+          id="renameCategoryInput"
+          placeholder="Nouveau nom de la catégorie..."
+          maxlength="30"
+        >
+        <div class="modal-buttons">
+          <button onclick="confirmRenameCategory()" class="btn-primary">Renommer</button>
+          <button onclick="cancelRenameCategory()" class="btn-secondary">Annuler</button>
+        </div>
+      </div>
+      <div id="deleteCategoryConfirm" style="display: none;">
+        <p style="color: var(--danger-color); margin-bottom: 15px;">⚠️ Êtes-vous sûr ? Les salons de cette catégorie seront détachés. Cette action est irréversible.</p>
+        <div class="modal-buttons">
+          <button onclick="confirmDeleteCategory()" class="btn-danger">Supprimer</button>
+          <button onclick="cancelDeleteCategory()" class="btn-secondary">Annuler</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de création de catégorie -->
+  <div id="createCategoryModal" class="modal">
+    <div class="modal-content">
+      <h2>Créer une nouvelle catégorie</h2>
+      <input
+        type="text"
+        id="newCategoryInput"
+        placeholder="Nom de la catégorie..."
+        maxlength="30"
+      >
+      <div class="modal-buttons">
+        <button onclick="createCategory()" class="btn-primary">Créer</button>
+        <button onclick="closeCreateCategoryModal()" class="btn-secondary">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de profil utilisateur -->
+  <div id="profileModal" class="modal">
+    <div class="modal-content">
+      <h2>Mon Profil</h2>
+      <div style="text-align: center; margin: 20px 0;">
+        <div id="profileImageDisplay" class="profile-image-display">👤</div>
+        <p style="color: var(--text-secondary); margin-top: 10px;" id="profileUsername">Utilisateur</p>
+      </div>
+      <div style="margin: 20px 0;">
+        <label for="profileImageInput" style="display: block; margin-bottom: 10px; color: var(--text-primary);">
+          Changer ma photo de profil:
+        </label>
+        <input
+          type="file"
+          id="profileImageInput"
+          accept="image/*"
+          style="width: 100%; padding: 10px; background-color: var(--tertiary-color); border: 1px solid var(--secondary-color); border-radius: 4px; color: var(--text-primary);"
+        />
+        <small style="color: var(--text-secondary); display: block; margin-top: 5px;">Max 5MB, formats: JPG, PNG, GIF, WebP</small>
+      </div>
+      <div class="modal-buttons">
+        <button onclick="uploadProfileImage()" class="btn-primary">Enregistrer</button>
+        <button onclick="closeProfileModal()" class="btn-secondary">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
