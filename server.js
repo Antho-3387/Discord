@@ -48,7 +48,9 @@ const pool = new Pool({
   },
   max: 20, // Nombre max de connexions
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 10000, // Augmenté pour Render + Supabase
+  statement_timeout: 1000 * 60 * 5, // 5 minutes
+  query_timeout: 1000 * 60 * 5,
 });
 
 // Gérer les erreurs de connexion
