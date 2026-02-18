@@ -1,0 +1,8 @@
+node_modules/
+discord.db
+.env
+.vscode/
+*.log
+.DS_Store
+dist/
+build/

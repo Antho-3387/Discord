@@ -13,7 +13,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 // Clé secrète pour les tokens JWT
-const JWT_SECRET = 'discord_clone_secret_key_' + Date.now();
+const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_' + Date.now();
 
 const app = express();
 const server = http.createServer(app);
@@ -1055,7 +1055,7 @@ io.on('connection', (socket) => {
 // ===========================
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, 'localhost', () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔════════════════════════════════════╗
 ║   Discord Clone - Server Running   ║
