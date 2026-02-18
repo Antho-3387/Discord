@@ -1,0 +1,14 @@
+# Supabase Local Development
+.branches
+.changeset
+.env*.local
+.env*.example
+.vscode
+.idea
+.DS_Store
+
+# Supabase CLI Cache
+supabase/.temp/
+
+# Migrations locks
+supabase/migrations/.migrations.json

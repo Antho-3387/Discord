@@ -1,0 +1,8 @@
+{
+  "project_id": "zddpobiwlxwiogzuioog",
+  "db": {
+    "migrations": {
+      "dir": "./supabase/migrations"
+    }
+  }
+}
