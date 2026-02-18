@@ -1,6 +1,8 @@
 node_modules/
 discord.db
 .env
+.env.local
+.env.*.local
 .vscode/
 *.log
 .DS_Store

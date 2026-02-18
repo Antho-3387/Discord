@@ -1,19 +1,25 @@
 /**
  * Discord Clone - Backend Server
- * Serveur Express + Socket.io + SQLite
+ * Serveur Express + Socket.io + PostgreSQL (Supabase)
  */
 
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// Clé secrète pour les tokens JWT
+// Configuration sécurisée
 const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_' + Date.now();
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL && process.env.NODE_ENV === 'production') {
+  console.error('❌ ERREUR: Variable d\'environnement DATABASE_URL manquante!');
+  process.exit(1);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -31,117 +37,132 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'Public')));
 
 // ===========================
-// 🗄️  BASE DE DONNÉES SQLite
+// 🗄️  BASE DE DONNÉES PostgreSQL (Supabase)
 // ===========================
 
-// Initialiser la base de données
-const db = new sqlite3.Database('./discord.db', (err) => {
-  if (err) {
-    console.error('Erreur connexion DB:', err);
-  } else {
-    console.log('✅ Connecté à SQLite');
-    db.configure('busyTimeout', 5000);
-    db.serialize(() => {
-      initializeDatabase();
-    });
-  }
+// Pool de connexions PostgreSQL avec SSL pour sécurité
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false // Supabase requiert SSL
+  },
+  max: 20, // Nombre max de connexions
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
-// Initialiser les tables
-function initializeDatabase() {
-  // Table des catégories
-  db.run(`
-    CREATE TABLE IF NOT EXISTS categories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      position INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+// Gérer les erreurs de connexion
+pool.on('error', (err) => {
+  console.error('Erreur pool PostgreSQL:', err);
+});
 
-  // Table des utilisateurs
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      profile_image TEXT DEFAULT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `, (err) => {
-    if (err) {
-      console.error('Erreur création users:', err);
-    } else {
-      // Migrations: ajouter les colonnes manquantes
-      db.run(`ALTER TABLE users ADD COLUMN profile_image TEXT DEFAULT NULL`, (migErr) => {
-        if (!migErr) console.log('✅ Colonne profile_image ajoutée');
-      });
-      db.run(`ALTER TABLE users ADD COLUMN password TEXT DEFAULT NULL`, (migErr) => {
-        if (!migErr) console.log('✅ Colonne password ajoutée');
-      });
-    }
-  });
+// Initialiser la base de données
+async function initializeDatabase() {
+  const client = await pool.connect();
+  try {
+    console.log('⏳ Initialisation de la base de données...');
+    
+    // Table des catégories
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS categories (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        position INTEGER DEFAULT 0,
+        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  // Table des salons (channels)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS channels (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      description TEXT,
-      categoryId INTEGER DEFAULT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (categoryId) REFERENCES categories(id)
-    )
-  `, (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-      console.error('Erreur création channels:', err);
-    }
-    // Ajouter la colonne categoryId si elle n'existe pas
-    db.run(`
-      ALTER TABLE channels ADD COLUMN categoryId INTEGER DEFAULT NULL
-    `, (migErr) => {
-      if (migErr && migErr.message.includes('duplicate column')) {
-        console.log('✅ Colonne categoryId déjà présente');
-      }
-    });
-  });
+    // Table des utilisateurs
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT,
+        profile_image TEXT,
+        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  // Table des messages
-  db.run(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      channelId INTEGER NOT NULL,
-      author TEXT NOT NULL,
-      content TEXT NOT NULL,
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (channelId) REFERENCES channels(id)
-    )
-  `);
+    // Table des salons (channels)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS channels (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        description TEXT,
+        "categoryId" INTEGER DEFAULT NULL REFERENCES categories(id) ON DELETE SET NULL,
+        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  // Insérer les catégories par défaut
-  db.run("INSERT OR IGNORE INTO categories (name, position) VALUES (?, ?)", 
-    ['📋 Texte', 0]
-  );
-  db.run("INSERT OR IGNORE INTO categories (name, position) VALUES (?, ?)", 
-    ['🎙️ Vocal', 1]
-  );
+    // Table des messages
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        "channelId" INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        author TEXT NOT NULL,
+        content TEXT NOT NULL,
+        "timestamp" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  // Insérer des salons par défaut avec catégories
-  db.get("SELECT id FROM categories WHERE name = '📋 Texte'", (err, textCat) => {
-    if (textCat) {
-      db.run("INSERT OR IGNORE INTO channels (name, description, categoryId) VALUES (?, ?, ?)", 
-        ['general', 'Salon général pour discuter', textCat.id]
+    // Créer les index pour performance
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_messages_channelId ON messages("channelId")
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_channels_categoryId ON channels("categoryId")
+    `);
+
+    console.log('✅ Tables créées avec succès');
+
+    // Insérer les catégories par défaut
+    await client.query(
+      `INSERT INTO categories (name, position) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      ['📋 Texte', 0]
+    );
+    await client.query(
+      `INSERT INTO categories (name, position) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      ['🎙️ Vocal', 1]
+    );
+
+    // Récupérer l'ID de la catégorie "Texte"
+    const catResult = await client.query(
+      `SELECT id FROM categories WHERE name = $1`,
+      ['📋 Texte']
+    );
+
+    if (catResult.rows.length > 0) {
+      const textCatId = catResult.rows[0].id;
+
+      // Insérer des salons par défaut
+      await client.query(
+        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        ['general', 'Salon général pour discuter', textCatId]
       );
-      db.run("INSERT OR IGNORE INTO channels (name, description, categoryId) VALUES (?, ?, ?)", 
-        ['random', 'Messages aléatoires', textCat.id]
+      await client.query(
+        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        ['random', 'Messages aléatoires', textCatId]
       );
-      db.run("INSERT OR IGNORE INTO channels (name, description, categoryId) VALUES (?, ?, ?)", 
-        ['aide', 'Besoin d\'aide?', textCat.id]
+      await client.query(
+        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        ['aide', 'Besoin d\'aide?', textCatId]
       );
     }
-  });
 
-  console.log('✅ Tables initialisées');
+    console.log('✅ Données par défaut insérées');
+  } catch (err) {
+    console.error('❌ Erreur initialisation DB:', err);
+    throw err;
+  } finally {
+    client.release();
+  }
 }
+
+// Initialiser au démarrage
+initializeDatabase().catch(err => {
+  console.error('Impossible d\'initialiser la base de données:', err);
+  process.exit(1);
+});
 
 // ===========================
 // 🌐 ROUTES EXPRESS
@@ -152,168 +173,232 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'Public', 'index.html'));
 });
 
-// Récupérer toutes les catégories avec leurs salons
-app.get('/api/categories', (req, res) => {
-  db.all('SELECT * FROM categories ORDER BY position', (err, categories) => {
-    if (err) {
-      res.status(500).json({ error: 'Erreur lors de la récupération des catégories' });
-      return;
-    }
-
-    // Pour chaque catégorie, récupérer ses salons
-    const result = [];
-    let processed = 0;
-
-    if (categories.length === 0) {
-      res.json([]);
-      return;
-    }
-
-    categories.forEach(category => {
-      db.all('SELECT * FROM channels WHERE categoryId = ? ORDER BY createdAt', [category.id], (chanErr, channels) => {
-        result.push({
-          ...category,
-          channels: channels || []
-        });
-        processed++;
-
-        if (processed === categories.length) {
-          res.json(result);
-        }
-      });
-    });
-  });
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Récupérer tous les salons (sans catégories, pour la compatibilité)
-app.get('/api/channels', (req, res) => {
-  db.all('SELECT * FROM channels ORDER BY createdAt', (err, channels) => {
-    if (err) {
-      res.status(500).json({ error: 'Erreur lors de la récupération des salons' });
-    } else {
-      res.json(channels);
+// Récupérer toutes les catégories avec leurs salons
+app.get('/api/categories', async (req, res) => {
+  try {
+    const categories = await pool.query(
+      `SELECT * FROM categories ORDER BY position ASC`
+    );
+
+    const result = [];
+    for (const category of categories.rows) {
+      const channels = await pool.query(
+        `SELECT * FROM channels WHERE "categoryId" = $1 ORDER BY "createdAt" ASC`,
+        [category.id]
+      );
+
+      result.push({
+        ...category,
+        channels: channels.rows
+      });
     }
-  });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Erreur API /categories:', err);
+    res.status(500).json({ error: 'Erreur lors de la récupération des catégories' });
+  }
+});
+
+// Récupérer tous les salons
+app.get('/api/channels', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM channels ORDER BY "createdAt" ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Erreur API /channels:', err);
+    res.status(500).json({ error: 'Erreur lors de la récupération des salons' });
+  }
 });
 
 // Récupérer les messages d'un salon
-app.get('/api/messages/:channelId', (req, res) => {
-  const { channelId } = req.params;
-  db.all(
-    'SELECT * FROM messages WHERE channelId = ? ORDER BY timestamp ASC',
-    [channelId],
-    (err, messages) => {
-      if (err) {
-        res.status(500).json({ error: 'Erreur lors de la récupération des messages' });
-      } else {
-        res.json(messages);
-      }
-    }
-  );
+app.get('/api/messages/:channelId', async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const result = await pool.query(
+      `SELECT * FROM messages WHERE "channelId" = $1 ORDER BY "timestamp" ASC LIMIT 50`,
+      [channelId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Erreur API /messages:', err);
+    res.status(500).json({ error: 'Erreur lors de la récupération des messages' });
+  }
 });
 
 // Créer une nouvelle catégorie
-app.post('/api/categories', (req, res) => {
-  const { name } = req.body;
-  
-  if (!name || name.trim() === '') {
-    return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
-  }
+app.post('/api/categories', async (req, res) => {
+  try {
+    const { name } = req.body;
 
-  // Obtenir le plus grand position actuel
-  db.get('SELECT MAX(position) as maxPos FROM categories', (err, row) => {
-    const position = (row?.maxPos ?? -1) + 1;
-    
-    db.run(
-      'INSERT INTO categories (name, position) VALUES (?, ?)',
-      [name.trim(), position],
-      function(err) {
-        if (err) {
-          res.status(400).json({ error: 'Cette catégorie existe déjà' });
-        } else {
-          res.json({ 
-            success: true, 
-            category: {
-              id: this.lastID,
-              name: name.trim(),
-              position: position,
-              channels: []
-            }
-          });
-        }
-      }
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
+    }
+
+    const posResult = await pool.query(
+      `SELECT MAX(position) as maxPos FROM categories`
     );
-  });
+    const position = (posResult.rows[0].maxpos || -1) + 1;
+
+    const result = await pool.query(
+      `INSERT INTO categories (name, position) VALUES ($1, $2) RETURNING *`,
+      [name.trim(), position]
+    );
+
+    const category = result.rows[0];
+    res.json({
+      success: true,
+      category: {
+        id: category.id,
+        name: category.name,
+        position: category.position,
+        channels: []
+      }
+    });
+  } catch (err) {
+    if (err.code === '23505') { // UNIQUE constraint
+      return res.status(400).json({ error: 'Cette catégorie existe déjà' });
+    }
+    console.error('Erreur POST /categories:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Modifier une catégorie
-app.put('/api/categories/:categoryId', (req, res) => {
-  const { categoryId } = req.params;
-  const { name } = req.body;
+app.put('/api/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { name } = req.body;
 
-  if (!name || name.trim() === '') {
-    return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
-  }
-
-  db.run(
-    'UPDATE categories SET name = ? WHERE id = ?',
-    [name.trim(), categoryId],
-    function(err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          res.status(400).json({ error: 'Cette catégorie existe déjà' });
-        } else {
-          res.status(500).json({ error: 'Erreur lors de la modification' });
-        }
-      } else {
-        const updatedCategory = {
-          id: categoryId,
-          name: name.trim()
-        };
-
-        // Notifier tous les clients
-        io.emit('category_updated', updatedCategory);
-        console.log(`✏️  Catégorie modifiée: ${name}`);
-
-        res.json({ success: true, category: updatedCategory });
-      }
-    }
-  );
-});
-
-// Supprimer une catégorie
-app.delete('/api/categories/:categoryId', (req, res) => {
-  const { categoryId } = req.params;
-
-  db.get('SELECT name FROM categories WHERE id = ?', [categoryId], (err, category) => {
-    if (err) {
-      return res.status(500).json({ error: 'Erreur lors de la suppression' });
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
     }
 
-    if (!category) {
+    const result = await pool.query(
+      `UPDATE categories SET name = $1 WHERE id = $2 RETURNING *`,
+      [name.trim(), categoryId]
+    );
+
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Catégorie non trouvée' });
     }
 
-    // Supprimer d'abord tous les salons de la catégorie (ou les mettre en null)
-    db.run('UPDATE channels SET categoryId = NULL WHERE categoryId = ?', [categoryId], (updateErr) => {
-      if (updateErr) {
-        return res.status(500).json({ error: 'Erreur lors de la mise à jour des salons' });
-      }
+    const category = result.rows[0];
+    io.emit('category_updated', { id: category.id, name: category.name });
+    console.log(`✏️  Catégorie modifiée: ${name}`);
 
-      // Puis supprimer la catégorie
-      db.run('DELETE FROM categories WHERE id = ?', [categoryId], (deleteCategoryErr) => {
-        if (deleteCategoryErr) {
-          return res.status(500).json({ error: 'Erreur lors de la suppression de la catégorie' });
-        }
+    res.json({ success: true, category });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Cette catégorie existe déjà' });
+    }
+    console.error('Erreur PUT /categories:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
-        // Notifier tous les clients via Socket.io
-        io.emit('category_deleted', { categoryId, categoryName: category.name });
-        console.log(`🗑️  Catégorie supprimée: ${category.name}`);
-        
-        res.json({ success: true, message: 'Catégorie supprimée avec succès' });
-      });
-    });
-  });
+// Supprimer une catégorie
+app.delete('/api/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+
+    const catResult = await pool.query(
+      `SELECT name FROM categories WHERE id = $1`,
+      [categoryId]
+    );
+
+    if (catResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Catégorie non trouvée' });
+    }
+
+    const categoryName = catResult.rows[0].name;
+
+    // Supprimer la catégorie (les salons seront mis à NULL via ON DELETE SET NULL)
+    await pool.query(
+      `DELETE FROM categories WHERE id = $1`,
+      [categoryId]
+    );
+
+    io.emit('category_deleted', { categoryId, categoryName });
+    console.log(`🗑️  Catégorie supprimée: ${categoryName}`);
+
+    res.json({ success: true, message: 'Catégorie supprimée avec succès' });
+  } catch (err) {
+    console.error('Erreur DELETE /categories:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Supprimer un salon
+app.delete('/api/channels/:channelId', async (req, res) => {
+  try {
+    const { channelId } = req.params;
+
+    const chanResult = await pool.query(
+      `SELECT name FROM channels WHERE id = $1`,
+      [channelId]
+    );
+
+    if (chanResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Salon non trouvé' });
+    }
+
+    const channelName = chanResult.rows[0].name;
+
+    // Supprimer le salon (les messages seront supprimés via ON DELETE CASCADE)
+    await pool.query(
+      `DELETE FROM channels WHERE id = $1`,
+      [channelId]
+    );
+
+    io.emit('channel_deleted', { channelId, channelName });
+    console.log(`🗑️  Salon supprimé: ${channelName}`);
+
+    res.json({ success: true, message: 'Salon supprimé avec succès' });
+  } catch (err) {
+    console.error('Erreur DELETE /channels:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Modifier un salon
+app.put('/api/channels/:channelId', async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const { name, description } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Le nom du salon est requis' });
+    }
+
+    const result = await pool.query(
+      `UPDATE channels SET name = $1, description = $2 WHERE id = $3 RETURNING *`,
+      [name.trim(), description || '', channelId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Salon non trouvé' });
+    }
+
+    const channel = result.rows[0];
+    io.emit('channel_updated', channel);
+    console.log(`✏️  Salon modifié: ${name}`);
+
+    res.json({ success: true, channel });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Ce nom de salon existe déjà' });
+    }
+    console.error('Erreur PUT /channels:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // ===========================
@@ -340,92 +425,87 @@ function authenticateToken(req, res, next) {
 
 // Inscription
 app.post('/api/auth/register', async (req, res) => {
-  const { username, password } = req.body;
-
-  if (!username || username.trim() === '') {
-    return res.status(400).json({ error: 'Le pseudo est requis' });
-  }
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 4 caractères' });
-  }
-  if (username.trim().length < 3) {
-    return res.status(400).json({ error: 'Le pseudo doit contenir au moins 3 caractères' });
-  }
-
   try {
+    const { username, password } = req.body;
+
+    if (!username || username.trim() === '') {
+      return res.status(400).json({ error: 'Le pseudo est requis' });
+    }
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 4 caractères' });
+    }
+    if (username.trim().length < 3) {
+      return res.status(400).json({ error: 'Le pseudo doit contenir au moins 3 caractères' });
+    }
+
     // Vérifier si l'utilisateur existe déjà
-    db.get('SELECT id FROM users WHERE username = ?', [username.trim()], async (err, existingUser) => {
-      if (err) {
-        return res.status(500).json({ error: 'Erreur serveur' });
-      }
-      if (existingUser) {
-        return res.status(409).json({ error: 'Ce pseudo est déjà pris' });
-      }
+    const existingUser = await pool.query(
+      `SELECT id FROM users WHERE username = $1`,
+      [username.trim()]
+    );
 
-      // Hasher le mot de passe
-      const hashedPassword = await bcrypt.hash(password, 10);
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ error: 'Ce pseudo est déjà pris' });
+    }
 
-      db.run(
-        'INSERT INTO users (username, password) VALUES (?, ?)',
-        [username.trim(), hashedPassword],
-        function(insertErr) {
-          if (insertErr) {
-            console.error('Erreur inscription:', insertErr);
-            return res.status(500).json({ error: 'Erreur lors de l\'inscription' });
-          }
+    // Hasher le mot de passe
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-          // Générer un token JWT
-          const token = jwt.sign(
-            { id: this.lastID, username: username.trim() },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-          );
+    // Insérer l'utilisateur
+    const result = await pool.query(
+      `INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username`,
+      [username.trim(), hashedPassword]
+    );
 
-          console.log(`✅ Nouvel utilisateur inscrit: ${username.trim()}`);
-          res.json({
-            success: true,
-            username: username.trim(),
-            token
-          });
-        }
-      );
+    const user = result.rows[0];
+
+    // Générer un token JWT
+    const token = jwt.sign(
+      { id: user.id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    console.log(`✅ Nouvel utilisateur inscrit: ${username.trim()}`);
+    res.json({
+      success: true,
+      username: user.username,
+      token
     });
-  } catch (error) {
-    console.error('Erreur inscription:', error);
+  } catch (err) {
+    console.error('Erreur inscription:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
 // Connexion
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
 
-  if (!username || username.trim() === '') {
-    return res.status(400).json({ error: 'Le pseudo est requis' });
-  }
-  if (!password) {
-    return res.status(400).json({ error: 'Le mot de passe est requis' });
-  }
-
-  db.get('SELECT * FROM users WHERE username = ?', [username.trim()], async (err, user) => {
-    if (err) {
-      return res.status(500).json({ error: 'Erreur serveur' });
+    if (!username || username.trim() === '') {
+      return res.status(400).json({ error: 'Le pseudo est requis' });
     }
-    if (!user) {
+    if (!password) {
+      return res.status(400).json({ error: 'Le mot de passe est requis' });
+    }
+
+    // Récupérer l'utilisateur
+    const result = await pool.query(
+      `SELECT * FROM users WHERE username = $1`,
+      [username.trim()]
+    );
+
+    if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Pseudo ou mot de passe incorrect' });
     }
 
-    // Si l'utilisateur n'a pas de mot de passe (ancien compte), lui en attribuer un
-    if (!user.password) {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      db.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, user.id]);
-      console.log(`🔄 Mot de passe défini pour ancien compte: ${username.trim()}`);
-    } else {
-      // Vérifier le mot de passe
-      const validPassword = await bcrypt.compare(password, user.password);
-      if (!validPassword) {
-        return res.status(401).json({ error: 'Pseudo ou mot de passe incorrect' });
-      }
+    const user = result.rows[0];
+
+    // Vérifier le mot de passe
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Pseudo ou mot de passe incorrect' });
     }
 
     // Générer un token JWT
@@ -441,163 +521,79 @@ app.post('/api/auth/login', (req, res) => {
       username: user.username,
       token
     });
-  });
+  } catch (err) {
+    console.error('Erreur connexion:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
-// Vérifier le token (auto-login)
+// Vérifier le token
 app.get('/api/auth/verify', authenticateToken, (req, res) => {
   res.json({ success: true, username: req.user.username });
 });
 
-// Route legacy pour compatibilité (redirige vers login)
-app.post('/api/users', (req, res) => {
-  res.status(410).json({ error: 'Utilisez /api/auth/register ou /api/auth/login' });
-});
-
 // Récupérer le profil d'un utilisateur
-app.get('/api/users/:username', (req, res) => {
-  const { username } = req.params;
-  
-  db.get(
-    'SELECT username, profile_image FROM users WHERE username = ?',
-    [username],
-    (err, user) => {
-      if (err) {
-        res.status(500).json({ error: 'Erreur lors de la récupération du profil' });
-      } else if (!user) {
-        res.status(404).json({ error: 'Utilisateur non trouvé' });
-      } else {
-        res.json(user);
-      }
+app.get('/api/users/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const result = await pool.query(
+      `SELECT username, profile_image FROM users WHERE username = $1`,
+      [username]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
-  );
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Erreur GET /users/:username:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 // Uploader l'image de profil
-app.post('/api/users/:username/profile-image', (req, res) => {
-  const { username } = req.params;
-  const { imageData } = req.body;
+app.post('/api/users/:username/profile-image', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { imageData } = req.body;
 
-  if (!imageData) {
-    return res.status(400).json({ error: 'Image requise' });
+    if (!imageData) {
+      return res.status(400).json({ error: 'Image requise' });
+    }
+
+    // Limiter la taille à 2MB en base64
+    if (imageData.length > 2097152) {
+      console.error(`❌ Image trop grande: ${(imageData.length / 1024 / 1024).toFixed(2)}MB`);
+      return res.status(400).json({ error: 'Image trop grande (max 2MB)' });
+    }
+
+    // Insérer ou mettre à jour l'utilisateur
+    const result = await pool.query(
+      `INSERT INTO users (username, profile_image) VALUES ($1, $2) 
+       ON CONFLICT (username) DO UPDATE SET profile_image = EXCLUDED.profile_image
+       RETURNING username, profile_image`,
+      [username, imageData]
+    );
+
+    const user = result.rows[0];
+    io.emit('user_profile_updated', { username: user.username, imageData: user.profile_image });
+    console.log(`🖼️  Image de profil mise à jour pour: ${username}`);
+
+    res.json({ success: true, message: 'Image de profil mise à jour' });
+  } catch (err) {
+    console.error('Erreur POST /users/:username/profile-image:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
-
-  // Limiter la taille à 2MB en base64 (après compression côté client)
-  if (imageData.length > 2097152) {
-    console.error(`❌ Image trop grande: ${(imageData.length / 1024 / 1024).toFixed(2)}MB`);
-    return res.status(400).json({ error: 'Image trop grande (max 2MB)' });
-  }
-
-  // D'abord, s'assurer que l'utilisateur existe
-  db.run(
-    'INSERT OR IGNORE INTO users (username) VALUES (?)',
-    [username],
-    (insertErr) => {
-      if (insertErr) {
-        console.error('Erreur insertion utilisateur:', insertErr);
-        return res.status(500).json({ error: 'Erreur création utilisateur' });
-      }
-
-      // Ensuite, mettre à jour l'image de profil
-      db.run(
-        'UPDATE users SET profile_image = ? WHERE username = ?',
-        [imageData, username],
-        function(err) {
-          if (err) {
-            console.error('Erreur update profil:', err);
-            res.status(500).json({ error: 'Erreur lors de la sauvegarde: ' + err.message });
-          } else {
-            // Notifier tous les clients via Socket.io
-            io.emit('user_profile_updated', { username, imageData });
-            console.log(`🖼️  Image de profil mise à jour pour: ${username}`);
-            
-            res.json({ success: true, message: 'Image de profil mise à jour' });
-          }
-        }
-      );
-    }
-  );
-});
-
-// Supprimer un salon
-app.delete('/api/channels/:channelId', (req, res) => {
-  const { channelId } = req.params;
-
-  // Empêcher la suppression des salons par défaut
-  db.get('SELECT name FROM channels WHERE id = ?', [channelId], (err, channel) => {
-    if (err) {
-      return res.status(500).json({ error: 'Erreur lors de la suppression' });
-    }
-
-    if (!channel) {
-      return res.status(404).json({ error: 'Salon non trouvé' });
-    }
-
-    // Supprimer d'abord tous les messages du salon
-    db.run('DELETE FROM messages WHERE channelId = ?', [channelId], (deleteMessagesErr) => {
-      if (deleteMessagesErr) {
-        return res.status(500).json({ error: 'Erreur lors de la suppression des messages' });
-      }
-
-      // Puis supprimer le salon
-      db.run('DELETE FROM channels WHERE id = ?', [channelId], (deleteSalonErr) => {
-        if (deleteSalonErr) {
-          return res.status(500).json({ error: 'Erreur lors de la suppression du salon' });
-        }
-
-        // Notifier tous les clients via Socket.io
-        io.emit('channel_deleted', { channelId, channelName: channel.name });
-        console.log(`🗑️  Salon supprimé: ${channel.name}`);
-        
-        res.json({ success: true, message: 'Salon supprimé avec succès' });
-      });
-    });
-  });
-});
-
-// Modifier un salon
-app.put('/api/channels/:channelId', (req, res) => {
-  const { channelId } = req.params;
-  const { name, description } = req.body;
-
-  if (!name || name.trim() === '') {
-    return res.status(400).json({ error: 'Le nom du salon est requis' });
-  }
-
-  db.run(
-    'UPDATE channels SET name = ?, description = ? WHERE id = ?',
-    [name.trim(), description || '', channelId],
-    function(err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.status(400).json({ error: 'Ce nom de salon existe déjà' });
-        }
-        return res.status(500).json({ error: 'Erreur lors de la modification' });
-      }
-
-      const updatedChannel = {
-        id: channelId,
-        name: name.trim(),
-        description: description || ''
-      };
-
-      // Notifier tous les clients
-      io.emit('channel_updated', updatedChannel);
-      console.log(`✏️  Salon modifié: ${name}`);
-
-      res.json({ success: true, channel: updatedChannel });
-    }
-  );
 });
 
 // ===========================
 // 🔌 SOCKET.IO - Événements temps réel
 // ===========================
 
-// Stocker les utilisateurs connectés avec leurs informations
 const connectedUsers = {};
-const channelUsers = {}; // Utilisateurs par canal: { channelId: [username1, username2] }
-const typingUsers = {}; // Utilisateurs en train de taper: { channelId: [username1] }
+const channelUsers = {};
+const typingUsers = {};
 
 io.on('connection', (socket) => {
   console.log('👤 Nouvel utilisateur connecté:', socket.id);
@@ -605,15 +601,9 @@ io.on('connection', (socket) => {
   // Un utilisateur rejoint
   socket.on('user_joined', (data) => {
     const { username, channelId } = data;
-    
-    // Enregistrer l'utilisateur
-    connectedUsers[socket.id] = {
-      username,
-      channelId,
-      socketId: socket.id
-    };
 
-    // Ajouter l'utilisateur à la liste du canal
+    connectedUsers[socket.id] = { username, channelId, socketId: socket.id };
+
     if (!channelUsers[channelId]) {
       channelUsers[channelId] = [];
     }
@@ -621,19 +611,16 @@ io.on('connection', (socket) => {
       channelUsers[channelId].push(username);
     }
 
-    // Rejoindre la room du canal
     socket.join(`channel_${channelId}`);
 
     console.log(`📍 ${username} a rejoint le canal ${channelId}`);
     console.log(`👥 Utilisateurs en ligne: ${channelUsers[channelId].join(', ')}`);
 
-    // Notifier les autres utilisateurs
     io.to(`channel_${channelId}`).emit('user_joined', {
       username,
       message: `${username} a rejoint le salon`
     });
 
-    // Envoyer la liste des utilisateurs à jour
     io.to(`channel_${channelId}`).emit('users_update', {
       channelId,
       users: channelUsers[channelId]
@@ -641,78 +628,43 @@ io.on('connection', (socket) => {
   });
 
   // Envoyer un message
-  socket.on('send_message', (data) => {
-    const { author, content, channelId, isImage } = data;
+  socket.on('send_message', async (data) => {
+    try {
+      const { author, content, channelId, isImage } = data;
 
-    // Vérifier que le contenu n'est pas vide
-    if (!content || content.trim() === '') {
-      console.warn('⚠️ Message vide reçu');
-      return;
-    }
-
-    // Vérifier le nombre de messages dans le canal
-    db.get(
-      'SELECT COUNT(*) as count FROM messages WHERE channelId = ?',
-      [channelId],
-      function(err, row) {
-        if (err) {
-          console.error('Erreur vérification messages:', err);
-          return;
-        }
-
-        // Fonction pour insérer le message
-        const insertNewMessage = () => {
-          db.run(
-            'INSERT INTO messages (channelId, author, content) VALUES (?, ?, ?)',
-            [channelId, author, content],
-            function(insertErr) {
-              if (insertErr) {
-                console.error('Erreur sauvegarde message:', insertErr);
-              } else {
-                // Diffuser le message à tous les utilisateurs du canal
-                const messageData = {
-                  id: this.lastID,
-                  channelId,
-                  author,
-                  content,
-                  timestamp: new Date().toISOString()
-                };
-
-                // Envoyer aux AUTRES utilisateurs du canal (le sender a déjà l'optimistic update)
-                socket.broadcast.to(`channel_${channelId}`).emit('new_message', messageData);
-                
-                // Confirmer au sender que le message a été sauvegardé
-                socket.emit('message_confirmed', { tempId: data.tempId, message: messageData });
-                
-                if (isImage) {
-                  console.log(`🖼️  Image envoyée par ${author} dans canal ${channelId}`);
-                } else {
-                  console.log(`💬 Message de ${author} dans canal ${channelId}`);
-                }
-              }
-            }
-          );
-        };
-
-        // Si déjà 50 messages, supprimer le plus ancien D'ABORD, puis insérer
-        if (row.count >= 50) {
-          db.run(
-            'DELETE FROM messages WHERE id = (SELECT id FROM messages WHERE channelId = ? ORDER BY timestamp ASC LIMIT 1)',
-            [channelId],
-            (deleteErr) => {
-              if (deleteErr) {
-                console.error('Erreur suppression ancien message:', deleteErr);
-              }
-              // Insérer APRÈS la suppression
-              insertNewMessage();
-            }
-          );
-        } else {
-          // Si moins de 50, insérer directement
-          insertNewMessage();
-        }
+      if (!content || content.trim() === '') {
+        console.warn('⚠️ Message vide reçu');
+        return;
       }
-    );
+
+      // Insérer le message avec prepared statement
+      const result = await pool.query(
+        `INSERT INTO messages ("channelId", author, content) VALUES ($1, $2, $3) RETURNING *`,
+        [channelId, author, content]
+      );
+
+      const message = result.rows[0];
+
+      const messageData = {
+        id: message.id,
+        channelId: message.channelId,
+        author: message.author,
+        content: message.content,
+        timestamp: message.timestamp.toISOString()
+      };
+
+      socket.broadcast.to(`channel_${channelId}`).emit('new_message', messageData);
+      socket.emit('message_confirmed', { tempId: data.tempId, message: messageData });
+
+      if (isImage) {
+        console.log(`🖼️  Image envoyée par ${author}`);
+      } else {
+        console.log(`💬 Message de ${author}`);
+      }
+    } catch (err) {
+      console.error('Erreur send_message:', err);
+      socket.emit('error', { message: 'Erreur lors de l\'envoi du message' });
+    }
   });
 
   // Changer de canal
@@ -720,286 +672,254 @@ io.on('connection', (socket) => {
     const { channelId, username } = data;
     const user = connectedUsers[socket.id];
 
-    if (user) {
-      const oldChannelId = user.channelId;
+    if (!user) return;
 
-      // Retirer l'utilisateur de l'ancien canal
-      if (channelUsers[oldChannelId]) {
-        channelUsers[oldChannelId] = channelUsers[oldChannelId].filter(u => u !== username);
-        
-        // Notifier le départ
-        io.to(`channel_${oldChannelId}`).emit('user_left', {
-          username,
-          message: `${username} a quitté le salon`
-        });
+    const oldChannelId = user.channelId;
 
-        // Envoyer la liste mise à jour
-        io.to(`channel_${oldChannelId}`).emit('users_update', {
-          channelId: oldChannelId,
-          users: channelUsers[oldChannelId]
-        });
-      }
-
-      // Quitter l'ancienne room
-      socket.leave(`channel_${oldChannelId}`);
-
-      // Mettre à jour le canal actuel
-      user.channelId = channelId;
-      
-      // Ajouter l'utilisateur au nouveau canal
-      if (!channelUsers[channelId]) {
-        channelUsers[channelId] = [];
-      }
-      if (!channelUsers[channelId].includes(username)) {
-        channelUsers[channelId].push(username);
-      }
-
-      // Rejoindre la nouvelle room
-      socket.join(`channel_${channelId}`);
-
-      // Notifier l'arrivée
-      io.to(`channel_${channelId}`).emit('user_joined', {
+    // Retirer du canal précédent
+    if (channelUsers[oldChannelId]) {
+      channelUsers[oldChannelId] = channelUsers[oldChannelId].filter(u => u !== username);
+      io.to(`channel_${oldChannelId}`).emit('user_left', {
         username,
-        message: `${username} a rejoint le salon`
+        message: `${username} a quitté le salon`
       });
-
-      // Envoyer la liste mise à jour
-      io.to(`channel_${channelId}`).emit('users_update', {
-        channelId,
-        users: channelUsers[channelId]
+      io.to(`channel_${oldChannelId}`).emit('users_update', {
+        channelId: oldChannelId,
+        users: channelUsers[oldChannelId]
       });
-
-      console.log(`📍 ${username} a changé de canal vers ${channelId}`);
-      console.log(`👥 Utilisateurs en ligne: ${channelUsers[channelId].join(', ')}`);
     }
+
+    socket.leave(`channel_${oldChannelId}`);
+    user.channelId = channelId;
+
+    // Ajouter au nouveau canal
+    if (!channelUsers[channelId]) {
+      channelUsers[channelId] = [];
+    }
+    if (!channelUsers[channelId].includes(username)) {
+      channelUsers[channelId].push(username);
+    }
+
+    socket.join(`channel_${channelId}`);
+
+    io.to(`channel_${channelId}`).emit('user_joined', {
+      username,
+      message: `${username} a rejoint le salon`
+    });
+
+    io.to(`channel_${channelId}`).emit('users_update', {
+      channelId,
+      users: channelUsers[channelId]
+    });
+
+    console.log(`📍 ${username} a changé de canal vers ${channelId}`);
   });
 
   // Créer un nouveau canal
-  socket.on('create_channel', (data) => {
-    const { channelName, categoryId } = data;
+  socket.on('create_channel', async (data) => {
+    try {
+      const { channelName, categoryId } = data;
 
-    db.run(
-      'INSERT INTO channels (name, description, categoryId) VALUES (?, ?, ?)',
-      [channelName, `Canal créé par un utilisateur`, categoryId || null],
-      function(err) {
-        if (err) {
-          socket.emit('error', { message: 'Ce canal existe déjà' });
-        } else {
-          const newChannel = {
-            id: this.lastID,
-            name: channelName,
-            description: 'Canal créé par un utilisateur',
-            categoryId: categoryId || null,
-            createdAt: new Date().toISOString()
-          };
+      const result = await pool.query(
+        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) RETURNING *`,
+        [channelName, 'Canal créé par un utilisateur', categoryId || null]
+      );
 
-          // Notifier tous les utilisateurs du nouveau canal
-          io.emit('channel_created', newChannel);
-          console.log(`📢 Nouveau canal créé: ${channelName}`);
-        }
-      }
-    );
+      const channel = result.rows[0];
+      io.emit('channel_created', {
+        id: channel.id,
+        name: channel.name,
+        description: channel.description,
+        categoryId: channel.categoryId,
+        createdAt: channel.createdAt.toISOString()
+      });
+
+      console.log(`📢 Nouveau canal créé: ${channelName}`);
+    } catch (err) {
+      console.error('Erreur create_channel:', err);
+      socket.emit('error', { message: 'Ce canal existe déjà' });
+    }
   });
 
   // Créer une nouvelle catégorie
-  socket.on('create_category', (data) => {
-    const { categoryName } = data;
+  socket.on('create_category', async (data) => {
+    try {
+      const { categoryName } = data;
 
-    // Obtenir le plus grand position actuel
-    db.get('SELECT MAX(position) as maxPos FROM categories', (err, row) => {
-      const position = (row?.maxPos ?? -1) + 1;
-      
-      db.run(
-        'INSERT INTO categories (name, position) VALUES (?, ?)',
-        [categoryName, position],
-        function(err) {
-          if (err) {
-            socket.emit('error', { message: 'Cette catégorie existe déjà' });
-          } else {
-            const newCategory = {
-              id: this.lastID,
-              name: categoryName,
-              position: position,
-              channels: []
-            };
-
-            // Notifier tous les utilisateurs
-            io.emit('category_created', newCategory);
-            console.log(`📁 Nouvelle catégorie créée: ${categoryName}`);
-          }
-        }
+      const posResult = await pool.query(
+        `SELECT MAX(position) as maxPos FROM categories`
       );
-    });
+      const position = (posResult.rows[0].maxpos || -1) + 1;
+
+      const result = await pool.query(
+        `INSERT INTO categories (name, position) VALUES ($1, $2) RETURNING *`,
+        [categoryName, position]
+      );
+
+      const category = result.rows[0];
+      io.emit('category_created', {
+        id: category.id,
+        name: category.name,
+        position: category.position,
+        channels: []
+      });
+
+      console.log(`📁 Nouvelle catégorie créée: ${categoryName}`);
+    } catch (err) {
+      console.error('Erreur create_category:', err);
+      socket.emit('error', { message: 'Cette catégorie existe déjà' });
+    }
   });
 
   // Modifier une catégorie
-  socket.on('update_category', (data) => {
-    const { categoryId, name } = data;
+  socket.on('update_category', async (data) => {
+    try {
+      const { categoryId, name } = data;
 
-    if (!name || name.trim() === '') {
-      socket.emit('error', { message: 'Le nom de la catégorie est requis' });
-      return;
-    }
-
-    db.run(
-      'UPDATE categories SET name = ? WHERE id = ?',
-      [name.trim(), categoryId],
-      function(err) {
-        if (err) {
-          socket.emit('error', { message: 'Erreur lors de la modification' });
-        } else {
-          const updatedCategory = {
-            id: categoryId,
-            name: name.trim()
-          };
-
-          // Notifier tous les utilisateurs
-          io.emit('category_updated', updatedCategory);
-          console.log(`✏️  Catégorie modifiée: ${name}`);
-        }
+      if (!name || name.trim() === '') {
+        socket.emit('error', { message: 'Le nom de la catégorie est requis' });
+        return;
       }
-    );
+
+      const result = await pool.query(
+        `UPDATE categories SET name = $1 WHERE id = $2 RETURNING *`,
+        [name.trim(), categoryId]
+      );
+
+      if (result.rows.length > 0) {
+        const category = result.rows[0];
+        io.emit('category_updated', { id: category.id, name: category.name });
+        console.log(`✏️  Catégorie modifiée: ${name}`);
+      }
+    } catch (err) {
+      console.error('Erreur update_category:', err);
+      socket.emit('error', { message: 'Erreur lors de la modification' });
+    }
   });
 
   // Supprimer une catégorie
-  socket.on('delete_category', (data) => {
-    const { categoryId } = data;
+  socket.on('delete_category', async (data) => {
+    try {
+      const { categoryId } = data;
 
-    db.get('SELECT name FROM categories WHERE id = ?', [categoryId], (err, category) => {
-      if (err || !category) {
+      const catResult = await pool.query(
+        `SELECT name FROM categories WHERE id = $1`,
+        [categoryId]
+      );
+
+      if (catResult.rows.length === 0) {
         socket.emit('error', { message: 'Catégorie non trouvée' });
         return;
       }
 
-      // Mettre les salons de la catégorie en null
-      db.run('UPDATE channels SET categoryId = NULL WHERE categoryId = ?', [categoryId], (updateErr) => {
-        if (updateErr) {
-          socket.emit('error', { message: 'Erreur lors de la mise à jour' });
-          return;
-        }
+      const categoryName = catResult.rows[0].name;
 
-        // Supprimer la catégorie
-        db.run('DELETE FROM categories WHERE id = ?', [categoryId], (deleteCategoryErr) => {
-          if (deleteCategoryErr) {
-            socket.emit('error', { message: 'Erreur lors de la suppression' });
-            return;
-          }
+      await pool.query(
+        `DELETE FROM categories WHERE id = $1`,
+        [categoryId]
+      );
 
-          // Notifier tous les utilisateurs
-          io.emit('category_deleted', { categoryId, categoryName: category.name });
-          console.log(`🗑️  Catégorie supprimée: ${category.name}`);
-        });
-      });
-    });
+      io.emit('category_deleted', { categoryId, categoryName });
+      console.log(`🗑️  Catégorie supprimée: ${categoryName}`);
+    } catch (err) {
+      console.error('Erreur delete_category:', err);
+      socket.emit('error', { message: 'Erreur lors de la suppression' });
+    }
   });
 
   // Supprimer un canal
-  socket.on('delete_channel', (data) => {
-    const { channelId } = data;
+  socket.on('delete_channel', async (data) => {
+    try {
+      const { channelId } = data;
 
-    db.get('SELECT name FROM channels WHERE id = ?', [channelId], (err, channel) => {
-      if (err || !channel) {
+      const chanResult = await pool.query(
+        `SELECT name FROM channels WHERE id = $1`,
+        [channelId]
+      );
+
+      if (chanResult.rows.length === 0) {
         socket.emit('error', { message: 'Salon non trouvé' });
         return;
       }
 
-      // Supprimer tous les messages du canal
-      db.run('DELETE FROM messages WHERE channelId = ?', [channelId], (deleteMessagesErr) => {
-        if (deleteMessagesErr) {
-          socket.emit('error', { message: 'Erreur lors de la suppression' });
-          return;
-        }
+      const channelName = chanResult.rows[0].name;
 
-        // Supprimer le salon
-        db.run('DELETE FROM channels WHERE id = ?', [channelId], (deleteSalonErr) => {
-          if (deleteSalonErr) {
-            socket.emit('error', { message: 'Erreur lors de la suppression' });
-            return;
-          }
+      await pool.query(
+        `DELETE FROM channels WHERE id = $1`,
+        [channelId]
+      );
 
-          // Notifier tous les clients
-          io.emit('channel_deleted', { channelId, channelName: channel.name });
-          console.log(`🗑️  Salon supprimé: ${channel.name}`);
-        });
-      });
-    });
+      io.emit('channel_deleted', { channelId, channelName });
+      console.log(`🗑️  Salon supprimé: ${channelName}`);
+    } catch (err) {
+      console.error('Erreur delete_channel:', err);
+      socket.emit('error', { message: 'Erreur lors de la suppression' });
+    }
   });
 
   // Modifier un canal
-  socket.on('update_channel', (data) => {
-    const { channelId, name, description } = data;
+  socket.on('update_channel', async (data) => {
+    try {
+      const { channelId, name, description } = data;
 
-    if (!name || name.trim() === '') {
-      socket.emit('error', { message: 'Le nom du salon est requis' });
-      return;
+      if (!name || name.trim() === '') {
+        socket.emit('error', { message: 'Le nom du salon est requis' });
+        return;
+      }
+
+      const result = await pool.query(
+        `UPDATE channels SET name = $1, description = $2 WHERE id = $3 RETURNING *`,
+        [name.trim(), description || '', channelId]
+      );
+
+      if (result.rows.length > 0) {
+        const channel = result.rows[0];
+        io.emit('channel_updated', channel);
+        console.log(`✏️  Salon modifié: ${name}`);
+      }
+    } catch (err) {
+      console.error('Erreur update_channel:', err);
+      socket.emit('error', { message: 'Erreur lors de la modification' });
     }
-
-    db.run(
-      'UPDATE channels SET name = ?, description = ? WHERE id = ?',
-      [name.trim(), description || '', channelId],
-      function(err) {
-        if (err) {
-          socket.emit('error', { message: 'Erreur lors de la modification' });
-          return;
-        }
-
-        const updatedChannel = {
-          id: channelId,
-          name: name.trim(),
-          description: description || ''
-        };
-
-        // Notifier tous les clients
-        io.emit('channel_updated', updatedChannel);
-        console.log(`✏️  Salon modifié: ${name.trim()}`);
-      }
-    );
   });
 
-  // Déplacer un canal vers une catégorie
-  socket.on('move_channel', (data) => {
-    const { channelId, categoryId } = data;
+  // Déplacer un canal
+  socket.on('move_channel', async (data) => {
+    try {
+      const { channelId, categoryId } = data;
 
-    db.run(
-      'UPDATE channels SET categoryId = ? WHERE id = ?',
-      [categoryId, channelId],
-      function(err) {
-        if (err) {
-          socket.emit('error', { message: 'Erreur lors du déplacement du salon' });
-          console.error('Erreur déplacement:', err);
-          return;
-        }
+      await pool.query(
+        `UPDATE channels SET "categoryId" = $1 WHERE id = $2`,
+        [categoryId, channelId]
+      );
 
-        // Notifier tous les clients
-        io.emit('channel_moved', { channelId, categoryId });
-        console.log(`🚚 Salon ${channelId} déplacé vers catégorie ${categoryId || 'aucune'}`);
-      }
-    );
+      io.emit('channel_moved', { channelId, categoryId });
+      console.log(`🚚 Salon ${channelId} déplacé vers catégorie ${categoryId || 'aucune'}`);
+    } catch (err) {
+      console.error('Erreur move_channel:', err);
+      socket.emit('error', { message: 'Erreur lors du déplacement' });
+    }
   });
 
-  // Un utilisateur se déconnecte
+  // Déconnexion
   socket.on('disconnect', () => {
     const user = connectedUsers[socket.id];
     if (user) {
       const { username, channelId } = user;
 
-      // Retirer l'utilisateur de son canal
       if (channelUsers[channelId]) {
         channelUsers[channelId] = channelUsers[channelId].filter(u => u !== username);
       }
 
-      // Retirer l'utilisateur de la liste typing
       if (typingUsers[channelId]) {
         typingUsers[channelId] = typingUsers[channelId].filter(u => u !== username);
       }
 
-      // Notifier les autres utilisateurs
       io.to(`channel_${channelId}`).emit('user_left', {
         username,
         message: `${username} a quitté le salon`
       });
 
-      // Envoyer la liste mise à jour
       io.to(`channel_${channelId}`).emit('users_update', {
         channelId,
         users: channelUsers[channelId] || []
@@ -1010,43 +930,34 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Gestion des erreurs
-  socket.on('error', (error) => {
-    console.error('Erreur Socket:', error);
-  });
-
-  // Utilisateur en train de taper
+  // Typing indicators
   socket.on('typing', (data) => {
     const { username, channelId } = data;
-    
+
     if (!typingUsers[channelId]) {
       typingUsers[channelId] = [];
     }
-    
+
     if (!typingUsers[channelId].includes(username)) {
       typingUsers[channelId].push(username);
     }
 
-    // Notifier les autres utilisateurs du canal
-    io.to(`channel_${channelId}`).emit('user_typing', {
-      username,
-      channelId
-    });
+    io.to(`channel_${channelId}`).emit('user_typing', { username, channelId });
   });
 
-  // Utilisateur a arrêté de taper
   socket.on('stop_typing', (data) => {
     const { username, channelId } = data;
-    
+
     if (typingUsers[channelId]) {
       typingUsers[channelId] = typingUsers[channelId].filter(u => u !== username);
     }
 
-    // Notifier les autres utilisateurs du canal
-    io.to(`channel_${channelId}`).emit('user_stopped_typing', {
-      username,
-      channelId
-    });
+    io.to(`channel_${channelId}`).emit('user_stopped_typing', { username, channelId });
+  });
+
+  // Gestion des erreurs
+  socket.on('error', (error) => {
+    console.error('Erreur Socket:', error);
   });
 });
 
@@ -1060,6 +971,8 @@ server.listen(PORT, '0.0.0.0', () => {
 ╔════════════════════════════════════╗
 ║   Discord Clone - Server Running   ║
 ║   🌐 http://localhost:${PORT}      ║
+║   📊 Database: PostgreSQL/Supabase ║
+║   🔒 SSL: Enabled                  ║
 ╚════════════════════════════════════╝
   `);
 });
@@ -1071,6 +984,6 @@ process.on('unhandledRejection', (err) => {
 
 process.on('SIGINT', () => {
   console.log('\n📴 Arrêt du serveur...');
-  db.close();
+  pool.end();
   process.exit(0);
 });
