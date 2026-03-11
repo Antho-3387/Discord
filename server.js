@@ -40,80 +40,10 @@ app.use(express.static(path.join(__dirname, 'Public')));
 // 🗄️  BASE DE DONNÉES - Prisma ORM
 // ===========================
 
-// Tester la connexion à la base de données
-async function testDatabaseConnection() {
-  try {
-    console.log('🔍 Test de connexion à la base de données...');
-    await prisma.$queryRaw`SELECT 1`;
-    console.log('✅ Connexion à la base de données réussie');
-    return true;
-  } catch (err) {
-    console.error('❌ Erreur de connexion:', err.message);
-    console.error('📍 Vérifiez DATABASE_URL dans Render Environment');
-    return false;
-  }
-}
-
 // Initialiser la base de données avec les données par défaut
 async function initializeDatabase() {
-  try {
-    console.log('⏳ Initialisation de la base de données avec Prisma...');
-    const connected = await testDatabaseConnection();
-    
-    if (!connected) {
-      console.warn('⚠️ Connexion BD échouée. Abandon initialisation.');
-      return;
-    }
-
-    // Créer les catégories par défaut
-    const textCat = await prisma.category.upsert({
-      where: { name: '📋 Texte' },
-      update: {},
-      create: { name: '📋 Texte', position: 0 }
-    });
-
-    await prisma.category.upsert({
-      where: { name: '🎙️ Vocal' },
-      update: {},
-      create: { name: '🎙️ Vocal', position: 1 }
-    });
-
-    // Créer les salons par défaut
-    await prisma.channel.upsert({
-      where: { name: 'general' },
-      update: {},
-      create: {
-        name: 'general',
-        description: 'Salon général pour discuter',
-        categoryId: textCat.id
-      }
-    });
-
-    await prisma.channel.upsert({
-      where: { name: 'random' },
-      update: {},
-      create: {
-        name: 'random',
-        description: 'Messages aléatoires',
-        categoryId: textCat.id
-      }
-    });
-
-    await prisma.channel.upsert({
-      where: { name: 'aide' },
-      update: {},
-      create: {
-        name: 'aide',
-        description: 'Besoin d\'aide?',
-        categoryId: textCat.id
-      }
-    });
-
-    console.log('✅ Base de données initialisée avec Prisma');
-  } catch (err) {
-    console.warn('⚠️ Initialisation BD échouée:', err.message);
-    console.warn('ℹ️ Le serveur continuera. Vérifiez les logs Render.');
-  }
+  // Ne rien faire - les tables existent déjà
+  console.log('✅ Base de données prête');
 }
 
 // Initialiser au démarrage (toujours - important pour Render)
