@@ -10,3 +10,5 @@ services:
         value: 18
       - key: JWT_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        value: file:./discord.db

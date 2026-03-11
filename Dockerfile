@@ -17,10 +17,11 @@ COPY . .
 RUN npm ci --only=production
 
 # Générer le client Prisma
+ENV DATABASE_URL=file:./discord.db
 RUN npx prisma generate
 
 # Exécuter les migrations Prisma
-RUN npx prisma migrate deploy --skip-generate
+RUN npx prisma migrate deploy --skip-generate || true
 
 # Exposer le port
 EXPOSE 8080
@@ -28,6 +29,7 @@ EXPOSE 8080
 # Variables d'environnement
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV DATABASE_URL=file:./discord.db
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
