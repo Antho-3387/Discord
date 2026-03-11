@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "setup-db": "node setup-database.js",
     "configure": "node configure.js",
-    "set-password": "node set-password.js"
+    "set-password": "node set-password.js",
+    "postinstall": "prisma generate"
   },
   "keywords": [
     "discord",
