@@ -95,12 +95,10 @@ async function initializeDatabase() {
   }
 }
 
-// Initialiser au démarrage (optionnel - les tables sont déjà créées en production)
-if (process.env.NODE_ENV !== 'production') {
-  initializeDatabase().catch(err => {
-    console.warn('⚠️ Initialisation BD échouée:', err.message);
-  });
-}
+// Initialiser au démarrage (toujours - important pour Render)
+initializeDatabase().catch(err => {
+  console.warn('⚠️ Initialisation BD échouée:', err.message);
+});
 
 // ===========================
 // 🌐 ROUTES EXPRESS

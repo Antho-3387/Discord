@@ -16,6 +16,12 @@ COPY . .
 # Installer les dépendances npm
 RUN npm ci --only=production
 
+# Générer le client Prisma
+RUN npx prisma generate
+
+# Exécuter les migrations Prisma
+RUN npx prisma migrate deploy --skip-generate
+
 # Exposer le port
 EXPOSE 8080
 
