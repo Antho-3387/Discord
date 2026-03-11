@@ -1,25 +1,24 @@
 /**
  * Discord Clone - Backend Server
- * Serveur Express + Socket.io + PostgreSQL (Supabase)
+ * Serveur Express + Socket.io + PostgreSQL (Supabase) + Prisma ORM
  */
 
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
-const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { PrismaClient } = require('@prisma/client');
+
+// Initialiser Prisma
+const prisma = new PrismaClient({
+  errorFormat: 'colorless', // Moins verbeux en production
+});
 
 // Configuration sécurisée
 const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_' + Date.now();
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL && process.env.NODE_ENV === 'production') {
-  console.error('❌ ERREUR: Variable d\'environnement DATABASE_URL manquante!');
-  process.exit(1);
-}
 
 const app = express();
 const server = http.createServer(app);
@@ -37,134 +36,69 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'Public')));
 
 // ===========================
-// 🗄️  BASE DE DONNÉES PostgreSQL (Supabase)
+// 🗄️  BASE DE DONNÉES - Prisma ORM
 // ===========================
 
-// Pool de connexions PostgreSQL avec SSL pour sécurité
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Supabase requiert SSL
-  },
-  max: 20, // Nombre max de connexions
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000, // Augmenté pour Render + Supabase
-  statement_timeout: 1000 * 60 * 5, // 5 minutes
-  query_timeout: 1000 * 60 * 5,
-});
-
-// Gérer les erreurs de connexion
-pool.on('error', (err) => {
-  console.error('Erreur pool PostgreSQL:', err);
-});
-
-// Initialiser la base de données
+// Initialiser la base de données avec les données par défaut
 async function initializeDatabase() {
-  const client = await pool.connect();
   try {
-    console.log('⏳ Initialisation de la base de données...');
-    
-    // Table des catégories
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS categories (
-        id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        position INTEGER DEFAULT 0,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    console.log('⏳ Initialisation de la base de données avec Prisma...');
 
-    // Table des utilisateurs
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT,
-        profile_image TEXT,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    // Créer les catégories par défaut
+    const textCat = await prisma.category.upsert({
+      where: { name: '📋 Texte' },
+      update: {},
+      create: { name: '📋 Texte', position: 0 }
+    });
 
-    // Table des salons (channels)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS channels (
-        id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        description TEXT,
-        "categoryId" INTEGER DEFAULT NULL REFERENCES categories(id) ON DELETE SET NULL,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    await prisma.category.upsert({
+      where: { name: '🎙️ Vocal' },
+      update: {},
+      create: { name: '🎙️ Vocal', position: 1 }
+    });
 
-    // Table des messages
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id SERIAL PRIMARY KEY,
-        "channelId" INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-        author TEXT NOT NULL,
-        content TEXT NOT NULL,
-        "timestamp" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+    // Créer les salons par défaut
+    await prisma.channel.upsert({
+      where: { name: 'general' },
+      update: {},
+      create: {
+        name: 'general',
+        description: 'Salon général pour discuter',
+        categoryId: textCat.id
+      }
+    });
 
-    // Créer les index pour performance
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_messages_channelId ON messages("channelId")
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_channels_categoryId ON channels("categoryId")
-    `);
+    await prisma.channel.upsert({
+      where: { name: 'random' },
+      update: {},
+      create: {
+        name: 'random',
+        description: 'Messages aléatoires',
+        categoryId: textCat.id
+      }
+    });
 
-    console.log('✅ Tables créées avec succès');
+    await prisma.channel.upsert({
+      where: { name: 'aide' },
+      update: {},
+      create: {
+        name: 'aide',
+        description: 'Besoin d\'aide?',
+        categoryId: textCat.id
+      }
+    });
 
-    // Insérer les catégories par défaut
-    await client.query(
-      `INSERT INTO categories (name, position) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      ['📋 Texte', 0]
-    );
-    await client.query(
-      `INSERT INTO categories (name, position) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      ['🎙️ Vocal', 1]
-    );
-
-    // Récupérer l'ID de la catégorie "Texte"
-    const catResult = await client.query(
-      `SELECT id FROM categories WHERE name = $1`,
-      ['📋 Texte']
-    );
-
-    if (catResult.rows.length > 0) {
-      const textCatId = catResult.rows[0].id;
-
-      // Insérer des salons par défaut
-      await client.query(
-        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        ['general', 'Salon général pour discuter', textCatId]
-      );
-      await client.query(
-        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        ['random', 'Messages aléatoires', textCatId]
-      );
-      await client.query(
-        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        ['aide', 'Besoin d\'aide?', textCatId]
-      );
-    }
-
-    console.log('✅ Données par défaut insérées');
+    console.log('✅ Base de données initialisée avec Prisma');
   } catch (err) {
-    console.error('❌ Erreur initialisation DB:', err);
+    console.error('❌ Erreur initialisation DB:', err.message);
     throw err;
-  } finally {
-    client.release();
   }
 }
 
 // Initialiser au démarrage (optionnel - les tables sont déjà créées en production)
 if (process.env.NODE_ENV !== 'production') {
   initializeDatabase().catch(err => {
-    console.warn('⚠️ Initialisation BD échouée (tables check):', err.message);
-    // Continue anyway - tables may already exist
+    console.warn('⚠️ Initialisation BD échouée:', err.message);
   });
 }
 
@@ -185,26 +119,21 @@ app.get('/api/health', (req, res) => {
 // Récupérer toutes les catégories avec leurs salons
 app.get('/api/categories', async (req, res) => {
   try {
-    const categories = await pool.query(
-      `SELECT * FROM categories ORDER BY position ASC`
-    );
+    const categories = await prisma.category.findMany({
+      include: {
+        channels: {
+          orderBy: { createdAt: 'asc' }
+        }
+      },
+      orderBy: { position: 'asc' }
+    });
 
-    const result = [];
-    for (const category of categories.rows) {
-      const channels = await pool.query(
-        `SELECT * FROM channels WHERE "categoryId" = $1 ORDER BY "createdAt" ASC`,
-        [category.id]
-      );
-
-      result.push({
-        ...category,
-        channels: channels.rows
-      });
-    }
-
-    res.json(result);
+    res.json(categories);
   } catch (err) {
-    console.error('Erreur API /categories:', err);
+    console.error('Erreur API /categories:', err.message);
+    if (err.message?.includes('Can\'t reach database')) {
+      return res.status(503).json({ error: 'Base de données indisponible' });
+    }
     res.status(500).json({ error: 'Erreur lors de la récupération des catégories' });
   }
 });
@@ -212,10 +141,10 @@ app.get('/api/categories', async (req, res) => {
 // Récupérer tous les salons
 app.get('/api/channels', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT * FROM channels ORDER BY "createdAt" ASC`
-    );
-    res.json(result.rows);
+    const channels = await prisma.channel.findMany({
+      orderBy: { createdAt: 'asc' }
+    });
+    res.json(channels);
   } catch (err) {
     console.error('Erreur API /channels:', err);
     res.status(500).json({ error: 'Erreur lors de la récupération des salons' });
@@ -226,11 +155,12 @@ app.get('/api/channels', async (req, res) => {
 app.get('/api/messages/:channelId', async (req, res) => {
   try {
     const { channelId } = req.params;
-    const result = await pool.query(
-      `SELECT * FROM messages WHERE "channelId" = $1 ORDER BY "timestamp" ASC LIMIT 50`,
-      [channelId]
-    );
-    res.json(result.rows);
+    const messages = await prisma.message.findMany({
+      where: { channelId: parseInt(channelId) },
+      orderBy: { timestamp: 'asc' },
+      take: 50
+    });
+    res.json(messages);
   } catch (err) {
     console.error('Erreur API /messages:', err);
     res.status(500).json({ error: 'Erreur lors de la récupération des messages' });
@@ -246,28 +176,30 @@ app.post('/api/categories', async (req, res) => {
       return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
     }
 
-    const posResult = await pool.query(
-      `SELECT MAX(position) as maxPos FROM categories`
-    );
-    const position = (posResult.rows[0].maxpos || -1) + 1;
+    // Trouver la position max
+    const maxCategory = await prisma.category.findFirst({
+      orderBy: { position: 'desc' },
+      select: { position: true }
+    });
 
-    const result = await pool.query(
-      `INSERT INTO categories (name, position) VALUES ($1, $2) RETURNING *`,
-      [name.trim(), position]
-    );
+    const position = (maxCategory?.position || -1) + 1;
 
-    const category = result.rows[0];
+    const category = await prisma.category.create({
+      data: {
+        name: name.trim(),
+        position
+      }
+    });
+
     res.json({
       success: true,
       category: {
-        id: category.id,
-        name: category.name,
-        position: category.position,
+        ...category,
         channels: []
       }
     });
   } catch (err) {
-    if (err.code === '23505') { // UNIQUE constraint
+    if (err.code === 'P2002') { // UNIQUE constraint
       return res.status(400).json({ error: 'Cette catégorie existe déjà' });
     }
     console.error('Erreur POST /categories:', err);
@@ -285,23 +217,21 @@ app.put('/api/categories/:categoryId', async (req, res) => {
       return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
     }
 
-    const result = await pool.query(
-      `UPDATE categories SET name = $1 WHERE id = $2 RETURNING *`,
-      [name.trim(), categoryId]
-    );
+    const category = await prisma.category.update({
+      where: { id: parseInt(categoryId) },
+      data: { name: name.trim() }
+    });
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Catégorie non trouvée' });
-    }
-
-    const category = result.rows[0];
     io.emit('category_updated', { id: category.id, name: category.name });
     console.log(`✏️  Catégorie modifiée: ${name}`);
 
     res.json({ success: true, category });
   } catch (err) {
-    if (err.code === '23505') {
+    if (err.code === 'P2002') {
       return res.status(400).json({ error: 'Cette catégorie existe déjà' });
+    }
+    if (err.code === 'P2025') { // Record not found
+      return res.status(404).json({ error: 'Catégorie non trouvée' });
     }
     console.error('Erreur PUT /categories:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -313,28 +243,29 @@ app.delete('/api/categories/:categoryId', async (req, res) => {
   try {
     const { categoryId } = req.params;
 
-    const catResult = await pool.query(
-      `SELECT name FROM categories WHERE id = $1`,
-      [categoryId]
-    );
+    const category = await prisma.category.findUnique({
+      where: { id: parseInt(categoryId) }
+    });
 
-    if (catResult.rows.length === 0) {
+    if (!category) {
       return res.status(404).json({ error: 'Catégorie non trouvée' });
     }
 
-    const categoryName = catResult.rows[0].name;
+    const categoryName = category.name;
 
     // Supprimer la catégorie (les salons seront mis à NULL via ON DELETE SET NULL)
-    await pool.query(
-      `DELETE FROM categories WHERE id = $1`,
-      [categoryId]
-    );
+    await prisma.category.delete({
+      where: { id: parseInt(categoryId) }
+    });
 
-    io.emit('category_deleted', { categoryId, categoryName });
+    io.emit('category_deleted', { categoryId: parseInt(categoryId), categoryName });
     console.log(`🗑️  Catégorie supprimée: ${categoryName}`);
 
     res.json({ success: true, message: 'Catégorie supprimée avec succès' });
   } catch (err) {
+    if (err.code === 'P2025') {
+      return res.status(404).json({ error: 'Catégorie non trouvée' });
+    }
     console.error('Erreur DELETE /categories:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -345,28 +276,29 @@ app.delete('/api/channels/:channelId', async (req, res) => {
   try {
     const { channelId } = req.params;
 
-    const chanResult = await pool.query(
-      `SELECT name FROM channels WHERE id = $1`,
-      [channelId]
-    );
+    const channel = await prisma.channel.findUnique({
+      where: { id: parseInt(channelId) }
+    });
 
-    if (chanResult.rows.length === 0) {
+    if (!channel) {
       return res.status(404).json({ error: 'Salon non trouvé' });
     }
 
-    const channelName = chanResult.rows[0].name;
+    const channelName = channel.name;
 
     // Supprimer le salon (les messages seront supprimés via ON DELETE CASCADE)
-    await pool.query(
-      `DELETE FROM channels WHERE id = $1`,
-      [channelId]
-    );
+    await prisma.channel.delete({
+      where: { id: parseInt(channelId) }
+    });
 
-    io.emit('channel_deleted', { channelId, channelName });
+    io.emit('channel_deleted', { channelId: parseInt(channelId), channelName });
     console.log(`🗑️  Salon supprimé: ${channelName}`);
 
     res.json({ success: true, message: 'Salon supprimé avec succès' });
   } catch (err) {
+    if (err.code === 'P2025') {
+      return res.status(404).json({ error: 'Salon non trouvé' });
+    }
     console.error('Erreur DELETE /channels:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -382,23 +314,24 @@ app.put('/api/channels/:channelId', async (req, res) => {
       return res.status(400).json({ error: 'Le nom du salon est requis' });
     }
 
-    const result = await pool.query(
-      `UPDATE channels SET name = $1, description = $2 WHERE id = $3 RETURNING *`,
-      [name.trim(), description || '', channelId]
-    );
+    const channel = await prisma.channel.update({
+      where: { id: parseInt(channelId) },
+      data: {
+        name: name.trim(),
+        description: description || ''
+      }
+    });
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Salon non trouvé' });
-    }
-
-    const channel = result.rows[0];
     io.emit('channel_updated', channel);
     console.log(`✏️  Salon modifié: ${name}`);
 
     res.json({ success: true, channel });
   } catch (err) {
-    if (err.code === '23505') {
+    if (err.code === 'P2002') {
       return res.status(400).json({ error: 'Ce nom de salon existe déjà' });
+    }
+    if (err.code === 'P2025') {
+      return res.status(404).json({ error: 'Salon non trouvé' });
     }
     console.error('Erreur PUT /channels:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -443,12 +376,11 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Vérifier si l'utilisateur existe déjà
-    const existingUser = await pool.query(
-      `SELECT id FROM users WHERE username = $1`,
-      [username.trim()]
-    );
+    const existingUser = await prisma.user.findUnique({
+      where: { username: username.trim() }
+    });
 
-    if (existingUser.rows.length > 0) {
+    if (existingUser) {
       return res.status(409).json({ error: 'Ce pseudo est déjà pris' });
     }
 
@@ -456,12 +388,12 @@ app.post('/api/auth/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insérer l'utilisateur
-    const result = await pool.query(
-      `INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username`,
-      [username.trim(), hashedPassword]
-    );
-
-    const user = result.rows[0];
+    const user = await prisma.user.create({
+      data: {
+        username: username.trim(),
+        password: hashedPassword
+      }
+    });
 
     // Générer un token JWT
     const token = jwt.sign(
@@ -495,16 +427,13 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // Récupérer l'utilisateur
-    const result = await pool.query(
-      `SELECT * FROM users WHERE username = $1`,
-      [username.trim()]
-    );
+    const user = await prisma.user.findUnique({
+      where: { username: username.trim() }
+    });
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: 'Pseudo ou mot de passe incorrect' });
     }
-
-    const user = result.rows[0];
 
     // Vérifier le mot de passe
     const validPassword = await bcrypt.compare(password, user.password);
@@ -540,16 +469,16 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 app.get('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
-    const result = await pool.query(
-      `SELECT username, profile_image FROM users WHERE username = $1`,
-      [username]
-    );
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { username: true, profileImage: true }
+    });
 
-    if (result.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
 
-    res.json(result.rows[0]);
+    res.json(user);
   } catch (err) {
     console.error('Erreur GET /users/:username:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -572,16 +501,14 @@ app.post('/api/users/:username/profile-image', async (req, res) => {
       return res.status(400).json({ error: 'Image trop grande (max 2MB)' });
     }
 
-    // Insérer ou mettre à jour l'utilisateur
-    const result = await pool.query(
-      `INSERT INTO users (username, profile_image) VALUES ($1, $2) 
-       ON CONFLICT (username) DO UPDATE SET profile_image = EXCLUDED.profile_image
-       RETURNING username, profile_image`,
-      [username, imageData]
-    );
+    // Upsert l'image de profil
+    const user = await prisma.user.upsert({
+      where: { username },
+      update: { profileImage: imageData },
+      create: { username, profileImage: imageData }
+    });
 
-    const user = result.rows[0];
-    io.emit('user_profile_updated', { username: user.username, imageData: user.profile_image });
+    io.emit('user_profile_updated', { username: user.username, imageData: user.profileImage });
     console.log(`🖼️  Image de profil mise à jour pour: ${username}`);
 
     res.json({ success: true, message: 'Image de profil mise à jour' });
@@ -641,13 +568,14 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Insérer le message avec prepared statement
-      const result = await pool.query(
-        `INSERT INTO messages ("channelId", author, content) VALUES ($1, $2, $3) RETURNING *`,
-        [channelId, author, content]
-      );
-
-      const message = result.rows[0];
+      // Créer le message avec Prisma
+      const message = await prisma.message.create({
+        data: {
+          channelId: parseInt(channelId),
+          author,
+          content
+        }
+      });
 
       const messageData = {
         id: message.id,
@@ -724,12 +652,14 @@ io.on('connection', (socket) => {
     try {
       const { channelName, categoryId } = data;
 
-      const result = await pool.query(
-        `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) RETURNING *`,
-        [channelName, 'Canal créé par un utilisateur', categoryId || null]
-      );
+      const channel = await prisma.channel.create({
+        data: {
+          name: channelName,
+          description: 'Canal créé par un utilisateur',
+          categoryId: categoryId ? parseInt(categoryId) : null
+        }
+      });
 
-      const channel = result.rows[0];
       io.emit('channel_created', {
         id: channel.id,
         name: channel.name,
@@ -750,17 +680,20 @@ io.on('connection', (socket) => {
     try {
       const { categoryName } = data;
 
-      const posResult = await pool.query(
-        `SELECT MAX(position) as maxPos FROM categories`
-      );
-      const position = (posResult.rows[0].maxpos || -1) + 1;
+      const maxCategory = await prisma.category.findFirst({
+        orderBy: { position: 'desc' },
+        select: { position: true }
+      });
 
-      const result = await pool.query(
-        `INSERT INTO categories (name, position) VALUES ($1, $2) RETURNING *`,
-        [categoryName, position]
-      );
+      const position = (maxCategory?.position || -1) + 1;
 
-      const category = result.rows[0];
+      const category = await prisma.category.create({
+        data: {
+          name: categoryName,
+          position
+        }
+      });
+
       io.emit('category_created', {
         id: category.id,
         name: category.name,
@@ -785,16 +718,13 @@ io.on('connection', (socket) => {
         return;
       }
 
-      const result = await pool.query(
-        `UPDATE categories SET name = $1 WHERE id = $2 RETURNING *`,
-        [name.trim(), categoryId]
-      );
+      const category = await prisma.category.update({
+        where: { id: parseInt(categoryId) },
+        data: { name: name.trim() }
+      });
 
-      if (result.rows.length > 0) {
-        const category = result.rows[0];
-        io.emit('category_updated', { id: category.id, name: category.name });
-        console.log(`✏️  Catégorie modifiée: ${name}`);
-      }
+      io.emit('category_updated', { id: category.id, name: category.name });
+      console.log(`✏️  Catégorie modifiée: ${name}`);
     } catch (err) {
       console.error('Erreur update_category:', err);
       socket.emit('error', { message: 'Erreur lors de la modification' });
@@ -806,25 +736,21 @@ io.on('connection', (socket) => {
     try {
       const { categoryId } = data;
 
-      const catResult = await pool.query(
-        `SELECT name FROM categories WHERE id = $1`,
-        [categoryId]
-      );
+      const category = await prisma.category.findUnique({
+        where: { id: parseInt(categoryId) }
+      });
 
-      if (catResult.rows.length === 0) {
+      if (!category) {
         socket.emit('error', { message: 'Catégorie non trouvée' });
         return;
       }
 
-      const categoryName = catResult.rows[0].name;
+      await prisma.category.delete({
+        where: { id: parseInt(categoryId) }
+      });
 
-      await pool.query(
-        `DELETE FROM categories WHERE id = $1`,
-        [categoryId]
-      );
-
-      io.emit('category_deleted', { categoryId, categoryName });
-      console.log(`🗑️  Catégorie supprimée: ${categoryName}`);
+      io.emit('category_deleted', { categoryId: parseInt(categoryId), categoryName: category.name });
+      console.log(`🗑️  Catégorie supprimée: ${category.name}`);
     } catch (err) {
       console.error('Erreur delete_category:', err);
       socket.emit('error', { message: 'Erreur lors de la suppression' });
@@ -836,25 +762,21 @@ io.on('connection', (socket) => {
     try {
       const { channelId } = data;
 
-      const chanResult = await pool.query(
-        `SELECT name FROM channels WHERE id = $1`,
-        [channelId]
-      );
+      const channel = await prisma.channel.findUnique({
+        where: { id: parseInt(channelId) }
+      });
 
-      if (chanResult.rows.length === 0) {
+      if (!channel) {
         socket.emit('error', { message: 'Salon non trouvé' });
         return;
       }
 
-      const channelName = chanResult.rows[0].name;
+      await prisma.channel.delete({
+        where: { id: parseInt(channelId) }
+      });
 
-      await pool.query(
-        `DELETE FROM channels WHERE id = $1`,
-        [channelId]
-      );
-
-      io.emit('channel_deleted', { channelId, channelName });
-      console.log(`🗑️  Salon supprimé: ${channelName}`);
+      io.emit('channel_deleted', { channelId: parseInt(channelId), channelName: channel.name });
+      console.log(`🗑️  Salon supprimé: ${channel.name}`);
     } catch (err) {
       console.error('Erreur delete_channel:', err);
       socket.emit('error', { message: 'Erreur lors de la suppression' });
@@ -871,16 +793,16 @@ io.on('connection', (socket) => {
         return;
       }
 
-      const result = await pool.query(
-        `UPDATE channels SET name = $1, description = $2 WHERE id = $3 RETURNING *`,
-        [name.trim(), description || '', channelId]
-      );
+      const channel = await prisma.channel.update({
+        where: { id: parseInt(channelId) },
+        data: {
+          name: name.trim(),
+          description: description || ''
+        }
+      });
 
-      if (result.rows.length > 0) {
-        const channel = result.rows[0];
-        io.emit('channel_updated', channel);
-        console.log(`✏️  Salon modifié: ${name}`);
-      }
+      io.emit('channel_updated', channel);
+      console.log(`✏️  Salon modifié: ${name}`);
     } catch (err) {
       console.error('Erreur update_channel:', err);
       socket.emit('error', { message: 'Erreur lors de la modification' });
@@ -892,12 +814,12 @@ io.on('connection', (socket) => {
     try {
       const { channelId, categoryId } = data;
 
-      await pool.query(
-        `UPDATE channels SET "categoryId" = $1 WHERE id = $2`,
-        [categoryId, channelId]
-      );
+      await prisma.channel.update({
+        where: { id: parseInt(channelId) },
+        data: { categoryId: categoryId ? parseInt(categoryId) : null }
+      });
 
-      io.emit('channel_moved', { channelId, categoryId });
+      io.emit('channel_moved', { channelId: parseInt(channelId), categoryId });
       console.log(`🚚 Salon ${channelId} déplacé vers catégorie ${categoryId || 'aucune'}`);
     } catch (err) {
       console.error('Erreur move_channel:', err);
@@ -969,6 +891,28 @@ io.on('connection', (socket) => {
 // 🚀 DÉMARRAGE DU SERVEUR
 // ===========================
 
+// Middleware de gestion des erreurs global
+app.use((err, req, res, next) => {
+  console.error('❌ Erreur:', err.message);
+  
+  if (err.message?.includes('Can\'t reach database')) {
+    return res.status(503).json({ 
+      error: 'Base de données indisponible',
+      details: err.message 
+    });
+  }
+  
+  if (err.code === 'P2025') { // Prisma: Record not found
+    return res.status(404).json({ error: 'Ressource non trouvée' });
+  }
+  
+  if (err.code === 'P2002') { // Prisma: Unique constraint
+    return res.status(400).json({ error: 'Cette valeur existe déjà' });
+  }
+  
+  res.status(500).json({ error: err.message || 'Erreur serveur' });
+});
+
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
@@ -976,7 +920,8 @@ server.listen(PORT, '0.0.0.0', () => {
 ║   Discord Clone - Server Running   ║
 ║   🌐 http://localhost:${PORT}      ║
 ║   📊 Database: PostgreSQL/Supabase ║
-║   🔒 SSL: Enabled                  ║
+║   🔒 ORM: Prisma                   ║
+║   🔐 SSL: Enabled                  ║
 ╚════════════════════════════════════╝
   `);
 });
@@ -988,6 +933,6 @@ process.on('unhandledRejection', (err) => {
 
 process.on('SIGINT', () => {
   console.log('\n📴 Arrêt du serveur...');
-  pool.end();
+  prisma.$disconnect();
   process.exit(0);
 });

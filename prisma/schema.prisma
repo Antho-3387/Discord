@@ -1,0 +1,60 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Catégories
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  position  Int       @default(0)
+  createdAt DateTime  @default(now())
+  channels  Channel[]
+
+  @@map("categories")
+}
+
+// Utilisateurs
+model User {
+  id            Int       @id @default(autoincrement())
+  username      String    @unique
+  password      String?
+  profileImage  String?   @map("profile_image")
+  createdAt     DateTime  @default(now())
+
+  @@map("users")
+}
+
+// Salons (Channels)
+model Channel {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?   @default("")
+  categoryId  Int?      @map("categoryId")
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  messages    Message[]
+
+  @@index([categoryId])
+  @@map("channels")
+}
+
+// Messages
+model Message {
+  id        Int       @id @default(autoincrement())
+  channelId Int       @map("channelId")
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    String
+  content   String
+  timestamp DateTime  @default(now())
+
+  @@index([channelId])
+  @@map("messages")
+}

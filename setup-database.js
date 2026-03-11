@@ -11,6 +11,21 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 
+// Charger les variables d'environnement depuis .env.local
+const envPath = path.join(__dirname, '.env.local');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  envContent.split('\n').forEach(line => {
+    const [key, ...valueParts] = line.split('=');
+    if (key && !key.startsWith('#') && valueParts.length > 0) {
+      const value = valueParts.join('=').trim();
+      if (!process.env[key]) {
+        process.env[key] = value;
+      }
+    }
+  });
+}
+
 // Configuration
 const DATABASE_URL = process.env.DATABASE_URL;
 
