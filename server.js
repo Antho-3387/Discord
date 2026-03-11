@@ -12,9 +12,10 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
-// Initialiser Prisma
+// Initialiser Prisma avec configuration de connexion augmentée
 const prisma = new PrismaClient({
-  errorFormat: 'colorless', // Moins verbeux en production
+  errorFormat: 'colorless',
+  log: ['error', 'warn'],
 });
 
 // Configuration sécurisée
@@ -39,10 +40,30 @@ app.use(express.static(path.join(__dirname, 'Public')));
 // 🗄️  BASE DE DONNÉES - Prisma ORM
 // ===========================
 
+// Tester la connexion à la base de données
+async function testDatabaseConnection() {
+  try {
+    console.log('🔍 Test de connexion à la base de données...');
+    await prisma.$queryRaw`SELECT 1`;
+    console.log('✅ Connexion à la base de données réussie');
+    return true;
+  } catch (err) {
+    console.error('❌ Erreur de connexion:', err.message);
+    console.error('📍 Vérifiez DATABASE_URL dans Render Environment');
+    return false;
+  }
+}
+
 // Initialiser la base de données avec les données par défaut
 async function initializeDatabase() {
   try {
     console.log('⏳ Initialisation de la base de données avec Prisma...');
+    const connected = await testDatabaseConnection();
+    
+    if (!connected) {
+      console.warn('⚠️ Connexion BD échouée. Abandon initialisation.');
+      return;
+    }
 
     // Créer les catégories par défaut
     const textCat = await prisma.category.upsert({
@@ -91,7 +112,7 @@ async function initializeDatabase() {
     console.log('✅ Base de données initialisée avec Prisma');
   } catch (err) {
     console.warn('⚠️ Initialisation BD échouée:', err.message);
-    console.warn('ℹ️ Le serveur continuera sans initialisation. Les tables s\'initialiseront à la première requête.');
+    console.warn('ℹ️ Le serveur continuera. Vérifiez les logs Render.');
   }
 }
 
@@ -112,9 +133,24 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'Public', 'index.html'));
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Health check with database status
+app.get('/api/health', async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ 
+      status: 'ok', 
+      database: 'connected',
+      timestamp: new Date().toISOString() 
+    });
+  } catch (err) {
+    console.error('Health check - DB error:', err.message);
+    res.status(503).json({ 
+      status: 'degraded',
+      database: 'disconnected',
+      error: err.message,
+      timestamp: new Date().toISOString() 
+    });
+  }
 });
 
 // Récupérer toutes les catégories avec leurs salons
