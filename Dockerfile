@@ -2,7 +2,7 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Installer les dépendances de build pour pg (PostgreSQL)
+# Installer les dépendances de build
 RUN apk add --no-cache \
     python3 \
     make \
@@ -17,7 +17,6 @@ COPY . .
 RUN npm ci --only=production
 
 # Générer le client Prisma
-ENV DATABASE_URL=file:./discord.db
 RUN npx prisma generate
 
 # Exécuter les migrations Prisma
@@ -29,7 +28,6 @@ EXPOSE 8080
 # Variables d'environnement
 ENV NODE_ENV=production
 ENV PORT=8080
-ENV DATABASE_URL=file:./discord.db
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
