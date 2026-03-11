@@ -90,14 +90,17 @@ async function initializeDatabase() {
 
     console.log('✅ Base de données initialisée avec Prisma');
   } catch (err) {
-    console.error('❌ Erreur initialisation DB:', err.message);
-    throw err;
+    console.warn('⚠️ Initialisation BD échouée:', err.message);
+    console.warn('ℹ️ Le serveur continuera sans initialisation. Les tables s\'initialiseront à la première requête.');
   }
 }
 
 // Initialiser au démarrage (toujours - important pour Render)
-initializeDatabase().catch(err => {
-  console.warn('⚠️ Initialisation BD échouée:', err.message);
+// Cette fonction ne doit pas bloquer le démarrage du serveur
+initializeDatabase().then(() => {
+  console.log('✅ Initialization DB thread completed');
+}).catch(err => {
+  console.warn('⚠️ Initialization DB thread failed:', err.message);
 });
 
 // ===========================
