@@ -43,16 +43,16 @@ app.use(express.static(path.join(__dirname, 'Public')));
 // Initialiser la base de données avec les données par défaut
 async function initializeDatabase() {
   try {
-    // Synchroniser le schéma avec Prisma db push (plus  fiable que migrate)
+    // Appliquer les migrations pour SQLite
     const { execSync } = require('child_process');
-    console.log('⏳ Synchronisation du schéma de base de données...');
-    execSync('npx prisma db push --skip-generate', { 
+    console.log('⏳ Initialisation de la base de données...');
+    execSync('npx prisma migrate deploy', { 
       stdio: 'pipe',
       env: process.env
     });
-    console.log('✅ Base de données synchronisée');
+    console.log('✅ Base de données initialisée');
   } catch (err) {
-    console.log('⚠️ Synchronisation échouée, continuant:', err.message);
+    console.log('⚠️ Migrations échouées (normal si déjà appliquées):', err.message);
   }
 }
 
