@@ -1,0 +1,11 @@
+#!/bin/bash
+# Create .env for Render if it doesn't exist
+if [ ! -f .env ]; then
+  echo "Creating .env for build..."
+  cat > .env << 'EOF'
+DATABASE_URL="file:./discord.db"
+JWT_SECRET=a8eed1b9e00168fdc2d1e4d1d789bc24b2c80f9dc73272405160da4c73f179bc
+PORT=8080
+NODE_ENV=production
+EOF
+fi

@@ -3,12 +3,10 @@ services:
     name: discord-clone
     runtime: node
     plan: free
-    buildCommand: npm install && npx prisma generate
+    buildCommand: bash build-env.sh && npm install && npx prisma generate
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
         value: 18
-      - key: DATABASE_URL
-        value: file:./discord.db
       - key: JWT_SECRET
         value: a8eed1b9e00168fdc2d1e4d1d789bc24b2c80f9dc73272405160da4c73f179bc
