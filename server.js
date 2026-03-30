@@ -386,8 +386,9 @@ app.post('/api/auth/register', async (req, res) => {
       token
     });
   } catch (err) {
-    console.error('Erreur inscription:', err);
-    res.status(500).json({ error: 'Erreur serveur' });
+    console.error('❌ Erreur inscription:', err.message || err);
+    console.error('Code:', err.code);
+    res.status(500).json({ error: 'Erreur serveur: ' + (err.message || 'Erreur inconnue') });
   }
 });
 
@@ -433,8 +434,9 @@ app.post('/api/auth/login', async (req, res) => {
       token
     });
   } catch (err) {
-    console.error('Erreur connexion:', err);
-    res.status(500).json({ error: 'Erreur serveur' });
+    console.error('❌ Erreur connexion:', err.message || err);
+    console.error('Code:', err.code);
+    res.status(500).json({ error: 'Erreur serveur: ' + (err.message || 'Erreur inconnue') });
   }
 });
 
