@@ -12,6 +12,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
+// Fallback pour DATABASE_URL si non définie
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'file:./discord.db';
+  console.log('⚠️ DATABASE_URL non définie, utilisant SQLite par défaut');
+}
+
 // Initialiser Prisma avec configuration de connexion augmentée
 const prisma = new PrismaClient({
   errorFormat: 'colorless',
