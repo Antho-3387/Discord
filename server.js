@@ -3,12 +3,18 @@
  * Serveur Express + Socket.io + PostgreSQL (Supabase) + Prisma ORM
  */
 
-// ⚠️ FALLBACK MUST BE BEFORE IMPORTING PRISMA
+// 1️⃣ LOAD .env FIRST
+require('dotenv').config();
+
+// 2️⃣ FALLBACK IF NO DATABASE_URL
 if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = 'file:./discord.db';
   console.log('⚠️ DATABASE_URL non définie, utilisant SQLite par défaut');
+} else {
+  console.log('✅ DATABASE_URL chargée:', process.env.DATABASE_URL.substring(0, 50) + '...');
 }
 
+// 3️⃣ LOAD PRISMA AFTER env is ready
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
