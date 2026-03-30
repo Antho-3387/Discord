@@ -8,8 +8,9 @@ require('dotenv').config();
 
 // 2️⃣ FALLBACK IF NO DATABASE_URL
 if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = 'file:./discord.db';
-  console.log('⚠️ DATABASE_URL non définie, utilisant SQLite par défaut');
+  console.error('❌ ERREUR CRITIQUE: DATABASE_URL non définie!');
+  console.error('Requise pour PostgreSQL/Supabase');
+  process.exit(1);
 } else {
   console.log('✅ DATABASE_URL chargée:', process.env.DATABASE_URL.substring(0, 50) + '...');
 }
