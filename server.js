@@ -383,6 +383,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 // Connexion
 app.post('/api/auth/login', async (req, res) => {
+  console.log('🔐 Tentative de connexion:', req.body.username);
   try {
     const { username, password } = req.body;
 
