@@ -3,7 +3,7 @@ services:
     name: discord-clone
     runtime: node
     plan: free
-    buildCommand: bash build-env.sh && npm install && npx prisma generate
+    buildCommand: node setup-render-env.js && npm install && npx prisma generate
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
