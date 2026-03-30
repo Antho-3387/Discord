@@ -10,3 +10,14 @@ services:
         value: 18
       - key: JWT_SECRET
         value: a8eed1b9e00168fdc2d1e4d1d789bc24b2c80f9dc73272405160da4c73f179bc
+      - key: DATABASE_URL
+        fromService:
+          type: postgres
+          name: discord-db
+          property: connectionString
+
+databases:
+  - name: discord-db
+    engine: postgres
+    plan: free
+    version: 15

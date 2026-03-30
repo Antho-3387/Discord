@@ -4,11 +4,12 @@
   "description": "Une application web temps réel inspirée de Discord",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "npm run migrate && node server.js",
     "dev": "nodemon server.js",
     "setup-db": "node setup-database.js",
     "configure": "node configure.js",
     "set-password": "node set-password.js",
+    "migrate": "prisma migrate deploy",
     "postinstall": "prisma generate"
   },
   "keywords": [
