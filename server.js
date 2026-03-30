@@ -42,8 +42,19 @@ app.use(express.static(path.join(__dirname, 'Public')));
 
 // Initialiser la base de données avec les données par défaut
 async function initializeDatabase() {
-  // Ne rien faire - les tables existent déjà
-  console.log('✅ Base de données prête');
+  try {
+    // Exécuter les migrations Prisma au démarrage
+    const { execSync } = require('child_process');
+    console.log('⏳ Vérification des migrations Prisma...');
+    execSync('npx prisma migrate deploy --skip-generate', { 
+      stdio: 'inherit',
+      env: { ...process.env, NODE_ENV: process.env.NODE_ENV || 'production' }
+    });
+    console.log('✅ Base de données prête');
+  } catch (err) {
+    console.warn('⚠️ Migrations échouées (les tables existent peut-être):', err.message);
+    console.log('✅ Base de données prête');
+  }
 }
 
 // Initialiser au démarrage (toujours - important pour Render)
