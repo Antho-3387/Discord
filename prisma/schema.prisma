@@ -5,8 +5,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Supabase PostgreSQL Configuration
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
