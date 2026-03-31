@@ -4,7 +4,7 @@
   "description": "Une application web temps réel inspirée de Discord",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --dns-result-order=ipv4first server.js",
     "dev": "nodemon server.js",
     "setup-db": "node setup-database.js",
     "configure": "node configure.js",
