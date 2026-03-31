@@ -29,7 +29,8 @@ const { Pool } = require('pg');
 console.log('\n📌 Creating PostgreSQL Pool...');
 
 let dbUrl = process.env.DATABASE_URL;
-if (!dbUrl.includes('sslmode=')) {
+// Ne pas modifier les URLs pooling (elles ont déjà pgbouncer=true)
+if (!dbUrl.includes('pgbouncer') && !dbUrl.includes('sslmode=')) {
   dbUrl += (dbUrl.includes('?') ? '&' : '?') + 'sslmode=require';
 }
 
@@ -67,15 +68,22 @@ async function initializeDatabase() {
   try {
     console.log('\n⏳ Initializing database...');
     
+    // Drop and recreate (fresh start)
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS categories (
+      DROP TABLE IF EXISTS messages CASCADE;
+      DROP TABLE IF EXISTS channels CASCADE;
+      DROP TABLE IF EXISTS users CASCADE;
+      DROP TABLE IF EXISTS categories CASCADE;
+    `);
+    
+    await pool.query(`
+      CREATE TABLE categories (
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE NOT NULL,
-        position INTEGER DEFAULT 0,
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE users (
         id SERIAL PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
@@ -83,7 +91,7 @@ async function initializeDatabase() {
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS channels (
+      CREATE TABLE channels (
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE NOT NULL,
         description TEXT,
@@ -91,7 +99,7 @@ async function initializeDatabase() {
         "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE TABLE IF NOT EXISTS messages (
+      CREATE TABLE messages (
         id SERIAL PRIMARY KEY,
         "channelId" INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
         author TEXT NOT NULL,
@@ -99,16 +107,16 @@ async function initializeDatabase() {
         "timestamp" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE INDEX IF NOT EXISTS idx_messages_channelId ON messages("channelId");
-      CREATE INDEX IF NOT EXISTS idx_channels_categoryId ON channels("categoryId");
-      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+      CREATE INDEX idx_messages_channelId ON messages("channelId");
+      CREATE INDEX idx_channels_categoryId ON channels("categoryId");
+      CREATE INDEX idx_users_username ON users(username);
     `);
 
     // Insert defaults if empty
     const catCount = await pool.query(`SELECT COUNT(*) FROM categories`);
     if (catCount.rows[0].count === '0') {
       await pool.query(`
-        INSERT INTO categories (name, position) VALUES ('📋 Texte', 0), ('🎙️ Vocal', 1);
+        INSERT INTO categories (name) VALUES ('📋 Texte'), ('🎙️ Vocal');
       `);
       await pool.query(`
         INSERT INTO channels (name, description, "categoryId")
@@ -142,7 +150,7 @@ app.get('/api/categories', async (req, res) => {
       FROM categories c
       LEFT JOIN channels ch ON c.id = ch."categoryId"
       GROUP BY c.id
-      ORDER BY c.position ASC
+      ORDER BY c.id ASC
     `);
     res.json(categories.rows.map(cat => ({ ...cat, channels: cat.channels || [] })));
   } catch (err) {
@@ -179,10 +187,9 @@ app.post('/api/categories', async (req, res) => {
     const { name } = req.body;
     if (!name) return res.status(400).json({ error: 'Name required' });
 
-    const maxPos = await pool.query(`SELECT MAX(position) as max_pos FROM categories`);
     const result = await pool.query(
-      `INSERT INTO categories (name, position) VALUES ($1, $2) RETURNING *`,
-      [name, (maxPos.rows[0].max_pos || -1) + 1]
+      `INSERT INTO categories (name) VALUES ($1) RETURNING *`,
+      [name]
     );
     res.json({ success: true, category: { ...result.rows[0], channels: [] } });
   } catch (err) {
