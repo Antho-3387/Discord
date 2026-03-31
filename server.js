@@ -6,6 +6,12 @@
 // 1️⃣ LOAD .env FIRST
 require('dotenv').config();
 
+// DEBUG: Afficher les variables critiques
+console.log('🔍 DEBUG - Variables d\'environnement:');
+console.log('  - DATABASE_URL existe:', !!process.env.DATABASE_URL);
+console.log('  - JWT_SECRET existe:', !!process.env.JWT_SECRET);
+console.log('  - NODE_ENV:', process.env.NODE_ENV || 'development');
+
 // 2️⃣ FALLBACK IF NO DATABASE_URL
 if (!process.env.DATABASE_URL) {
   console.error('❌ ERREUR CRITIQUE: DATABASE_URL non définie!');
@@ -13,6 +19,7 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 } else {
   console.log('✅ DATABASE_URL chargée:', process.env.DATABASE_URL.substring(0, 50) + '...');
+  console.log('🔍 DEBUG - Type de base de donnée:', process.env.DATABASE_URL.includes('postgresql') ? 'PostgreSQL' : 'SQLite');
 }
 
 // 3️⃣ LOAD PRISMA AFTER env is ready
@@ -26,10 +33,13 @@ const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
 // Initialiser Prisma avec configuration de connexion augmentée
+console.log('🔍 DEBUG - Création du client Prisma...');
 const prisma = new PrismaClient({
-  errorFormat: 'colorless',
-  log: ['error', 'warn'],
+  errorFormat: 'pretty',
+  log: ['error', 'warn', 'info'],
 });
+
+console.log('✅ Client Prisma créé avec succès');
 
 // Configuration sécurisée
 const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_' + Date.now();
