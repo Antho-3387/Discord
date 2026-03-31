@@ -35,17 +35,39 @@ const JWT_SECRET = process.env.JWT_SECRET || 'default_secret_key_change_me';
 
 // ===== POOL SETUP =====
 console.log('\n📌 Creating PostgreSQL Pool...');
+let dbUrl = process.env.DATABASE_URL;
+
+// Ensure sslmode=require is in the URL
+if (!dbUrl.includes('sslmode=')) {
+  dbUrl += dbUrl.includes('?') ? '&sslmode=require' : '?sslmode=require';
+  console.log('✅ Added sslmode=require to DATABASE_URL');
+}
+
+console.log('DATABASE_URL preview:', dbUrl.substring(0, 40) + '...');
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
   ssl: { rejectUnauthorized: false },
   max: 20,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-  query_timeout: 5000,
+  connectionTimeoutMillis: 5000,
+  query_timeout: 10000,
+  statement_timeout: 10000,
 });
 
 pool.on('error', (err) => {
   console.error('❌ POOL ERROR:', err);
+});
+
+// TEST CONNECTION AT STARTUP
+pool.query('SELECT NOW()', (err, result) => {
+  if (err) {
+    console.error('❌ INITIAL CONNECTION TEST FAILED:', err.message);
+    console.error('Error code:', err.code);
+    console.error('Error details:', JSON.stringify(err, null, 2));
+  } else {
+    console.log('✅ INITIAL CONNECTION TEST PASSED:', result.rows[0]);
+  }
 });
 
 pool.on('connect', () => {
