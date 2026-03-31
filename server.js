@@ -127,7 +127,7 @@ async function initializeDatabase() {
     console.log('✅ Database initialized');
   } catch (err) {
     console.error('❌ Database init error:', err.message);
-    throw err;
+    console.warn('⚠️ Continuing anyway...');
   }
 }
 
@@ -266,6 +266,42 @@ app.get('/api/auth/verify', (req, res) => {
     res.json({ success: true, user: decoded });
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+app.get('/api/users/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    if (!username) return res.status(400).json({ error: 'Username required' });
+
+    const result = await pool.query(
+      `SELECT id, username, profile_image FROM users WHERE username = $1`,
+      [username]
+    );
+    
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('❌ GET /api/users/:username error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/users/:username/profile', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { profile_image } = req.body;
+
+    const result = await pool.query(
+      `UPDATE users SET profile_image = $1 WHERE username = $2 RETURNING id, username, profile_image`,
+      [profile_image, username]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('❌ PUT /api/users/:username/profile error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
