@@ -1,55 +1,65 @@
 /**
  * Discord Clone - Backend Server
- * Tech: Express + Socket.io + PostgreSQL (pg driver)
+ * Tech: Express + Socket.io + Fichier JSON (LOCAL DEV)
  */
 
 require('dotenv').config();
 
-// 🔍 ENV CHECK
-console.log('\n📌 Checking configuration...');
-if (!process.env.DATABASE_URL) {
-  console.error('❌ ERROR: DATABASE_URL not set in .env');
-  process.exit(1);
-}
-console.log('✅ DATABASE_URL loaded');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_12345';
-
-// 📦 IMPORTS
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
 
-// 🗄️ POSTGRESQL POOL
-console.log('\n📌 Creating PostgreSQL Pool...');
+const JWT_SECRET = process.env.JWT_SECRET || 'discord_clone_secret_key_12345';
+const DB_FILE = './db.json';
 
-let dbUrl = process.env.DATABASE_URL;
-// Ne pas modifier les URLs pooling (elles ont déjà pgbouncer=true)
-if (!dbUrl.includes('pgbouncer') && !dbUrl.includes('sslmode=')) {
-  dbUrl += (dbUrl.includes('?') ? '&' : '?') + 'sslmode=require';
+// 🗄️ DATABASE - Simple JSON file
+let db = {
+  categories: [],
+  users: [],
+  channels: [],
+  messages: []
+};
+
+function initializeDatabase() {
+  console.log('\n⏳ Initializing database...');
+  
+  if (fs.existsSync(DB_FILE)) {
+    db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  } else {
+    // Default data
+    db.categories = [
+      { id: 1, name: '📋 Texte', createdAt: new Date().toISOString() },
+      { id: 2, name: '🎙️ Vocal', createdAt: new Date().toISOString() }
+    ];
+    
+    db.channels = [
+      { id: 1, name: 'general', description: 'Salon général pour discuter', categoryId: 1, createdAt: new Date().toISOString() },
+      { id: 2, name: 'random', description: 'Messages aléatoires', categoryId: 1, createdAt: new Date().toISOString() },
+      { id: 3, name: 'aide', description: 'Besoin d\'aide?', categoryId: 1, createdAt: new Date().toISOString() }
+    ];
+    
+    db.users = [];
+    db.messages = [];
+    
+    saveDatabase();
+  }
+  
+  console.log('✅ Database initialized');
 }
 
-const pool = new Pool({
-  connectionString: dbUrl,
-  ssl: {
-    rejectUnauthorized: false
-  },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
-});
+function saveDatabase() {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
 
-pool.on('error', (err) => {
-  console.error('❌ Pool error:', err.message);
-});
-
-console.log('✅ PostgreSQL Pool created');
-
+function getNextId(type) {
+  if (db[type].length === 0) return 1;
+  return Math.max(...db[type].map(item => item.id)) + 1;
+}
 
 // 🎨 EXPRESS + SOCKET.IO
 const app = express();
@@ -63,260 +73,254 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'Public')));
 
-// 🗄️ DATABASE INITIALIZATION
-async function initializeDatabase() {
+initializeDatabase();
+
+// ===========================
+// 🌐 ROUTES EXPRESS
+// ===========================
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'Public', 'index.html'));
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/categories', (req, res) => {
   try {
-    console.log('\n⏳ Initializing database...');
+    const categories = db.categories.map(cat => ({
+      ...cat,
+      channels: db.channels.filter(ch => ch.categoryId === cat.id)
+    }));
+    res.json(categories);
+  } catch (err) {
+    console.error('Erreur API /categories:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des catégories' });
+  }
+});
+
+app.get('/api/channels', (req, res) => {
+  try {
+    res.json(db.channels);
+  } catch (err) {
+    console.error('Erreur API /channels:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des salons' });
+  }
+});
+
+app.get('/api/messages/:channelId', (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const messages = db.messages
+      .filter(m => m.channelId === parseInt(channelId))
+      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      .slice(-50);
+    res.json(messages);
+  } catch (err) {
+    console.error('Erreur API /messages:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération des messages' });
+  }
+});
+
+app.get('/api/users/:username', (req, res) => {
+  try {
+    const { username } = req.params;
+    const user = db.users.find(u => u.username === username);
     
-    // Drop and recreate (fresh start)
-    await pool.query(`
-      DROP TABLE IF EXISTS messages CASCADE;
-      DROP TABLE IF EXISTS channels CASCADE;
-      DROP TABLE IF EXISTS users CASCADE;
-      DROP TABLE IF EXISTS categories CASCADE;
-    `);
-    
-    await pool.query(`
-      CREATE TABLE categories (
-        id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE users (
-        id SERIAL PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        profile_image TEXT,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE channels (
-        id SERIAL PRIMARY KEY,
-        name TEXT UNIQUE NOT NULL,
-        description TEXT,
-        "categoryId" INTEGER DEFAULT NULL REFERENCES categories(id) ON DELETE SET NULL,
-        "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE messages (
-        id SERIAL PRIMARY KEY,
-        "channelId" INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-        author TEXT NOT NULL,
-        content TEXT NOT NULL,
-        "timestamp" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX idx_messages_channelId ON messages("channelId");
-      CREATE INDEX idx_channels_categoryId ON channels("categoryId");
-      CREATE INDEX idx_users_username ON users(username);
-    `);
-
-    // Insert defaults if empty
-    const catCount = await pool.query(`SELECT COUNT(*) FROM categories`);
-    if (catCount.rows[0].count === '0') {
-      await pool.query(`
-        INSERT INTO categories (name) VALUES ('📋 Texte'), ('🎙️ Vocal');
-      `);
-      await pool.query(`
-        INSERT INTO channels (name, description, "categoryId")
-        VALUES ('general', 'Salon général', 1), ('random', 'Aléatoire', 1), ('aide', 'Aide', 1);
-      `);
+    if (!user) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
-
-    console.log('✅ Database initialized');
+    
+    const { password, ...userWithoutPassword } = user;
+    res.json(userWithoutPassword);
   } catch (err) {
-    console.error('❌ Database init error:', err.message);
-    console.warn('⚠️ Continuing anyway...');
-  }
-}
-
-// 🌐 API ROUTES
-
-app.get('/api/health', async (req, res) => {
-  try {
-    await pool.query('SELECT 1');
-    res.json({ status: 'ok' });
-  } catch (err) {
-    res.status(503).json({ status: 'error', error: err.message });
+    console.error('Erreur API /users/:username:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la récupération de l\'utilisateur' });
   }
 });
 
-app.get('/api/categories', async (req, res) => {
-  try {
-    const categories = await pool.query(`
-      SELECT c.*,
-        json_agg(json_build_object('id', ch.id, 'name', ch.name, 'description', ch.description)) FILTER (WHERE ch.id IS NOT NULL) as channels
-      FROM categories c
-      LEFT JOIN channels ch ON c.id = ch."categoryId"
-      GROUP BY c.id
-      ORDER BY c.id ASC
-    `);
-    res.json(categories.rows.map(cat => ({ ...cat, channels: cat.channels || [] })));
-  } catch (err) {
-    console.error('❌ GET /categories error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/channels', async (req, res) => {
-  try {
-    const channels = await pool.query(`SELECT * FROM channels ORDER BY "createdAt" ASC`);
-    res.json(channels.rows);
-  } catch (err) {
-    console.error('❌ GET /channels error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/messages/:channelId', async (req, res) => {
-  try {
-    const messages = await pool.query(
-      `SELECT * FROM messages WHERE "channelId" = $1 ORDER BY "timestamp" ASC LIMIT 50`,
-      [parseInt(req.params.channelId)]
-    );
-    res.json(messages.rows);
-  } catch (err) {
-    console.error('❌ GET /messages error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/categories', async (req, res) => {
+app.post('/api/categories', (req, res) => {
   try {
     const { name } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name required' });
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Le nom de la catégorie est requis' });
+    }
 
-    const result = await pool.query(
-      `INSERT INTO categories (name) VALUES ($1) RETURNING *`,
-      [name]
-    );
-    res.json({ success: true, category: { ...result.rows[0], channels: [] } });
+    const category = {
+      id: getNextId('categories'),
+      name: name.trim(),
+      createdAt: new Date().toISOString()
+    };
+    
+    db.categories.push(category);
+    saveDatabase();
+
+    res.json({ success: true, category: { ...category, channels: [] } });
   } catch (err) {
-    console.error('❌ POST /categories error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur POST /categories:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la création de la catégorie' });
   }
 });
 
-app.post('/api/channels', async (req, res) => {
+app.post('/api/channels', (req, res) => {
   try {
     const { name, description, categoryId } = req.body;
-    if (!name) return res.status(400).json({ error: 'Name required' });
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Le nom du salon est requis' });
+    }
 
-    const result = await pool.query(
-      `INSERT INTO channels (name, description, "categoryId") VALUES ($1, $2, $3) RETURNING *`,
-      [name, description || '', categoryId || null]
-    );
-    res.json({ success: true, channel: result.rows[0] });
+    const channel = {
+      id: getNextId('channels'),
+      name: name.trim(),
+      description: description || '',
+      categoryId: categoryId || null,
+      createdAt: new Date().toISOString()
+    };
+    
+    db.channels.push(channel);
+    saveDatabase();
+
+    res.json({ success: true, channel });
   } catch (err) {
-    console.error('❌ POST /channels error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur POST /channels:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la création du salon' });
   }
 });
 
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    
+    if (!username || !password || username.trim() === '' || password.trim() === '') {
+      return res.status(400).json({ error: 'Username et password sont requis' });
+    }
 
-    const userExists = await pool.query(`SELECT id FROM users WHERE username = $1`, [username]);
-    if (userExists.rows.length > 0) return res.status(400).json({ error: 'User already exists' });
+    if (db.users.find(u => u.username === username)) {
+      return res.status(400).json({ error: 'Cet utilisateur existe déjà' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      `INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username`,
-      [username, hashedPassword]
-    );
+    const user = {
+      id: getNextId('users'),
+      username,
+      password: hashedPassword,
+      profile_image: null,
+      createdAt: new Date().toISOString()
+    };
+    
+    db.users.push(user);
+    saveDatabase();
 
-    const user = result.rows[0];
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+    const { password: _, ...userWithoutPassword } = user;
 
-    res.json({ success: true, user, token });
+    res.json({ success: true, user: userWithoutPassword, token });
   } catch (err) {
-    console.error('❌ POST /auth/register error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur POST /auth/register:', err.message);
+    res.status(500).json({ error: 'Erreur lors de l\'inscription' });
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username et password sont requis' });
+    }
 
-    const result = await pool.query(`SELECT * FROM users WHERE username = $1`, [username]);
-    if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
+    const user = db.users.find(u => u.username === username);
 
-    const user = result.rows[0];
+    if (!user) {
+      return res.status(401).json({ error: 'Identifiants incorrects' });
+    }
+
     const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Identifiants incorrects' });
+    }
 
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ success: true, user: { id: user.id, username: user.username }, token });
+
+    res.json({ 
+      success: true, 
+      user: { id: user.id, username: user.username, profile_image: user.profile_image },
+      token 
+    });
   } catch (err) {
-    console.error('❌ POST /auth/login error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur POST /auth/login:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la connexion' });
   }
 });
 
-app.get('/api/auth/verify', (req, res) => {
+app.post('/api/auth/verify', (req, res) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'No token' });
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Token manquant' });
+    }
+
+    const token = authHeader.substring(7);
     const decoded = jwt.verify(token, JWT_SECRET);
-    res.json({ success: true, user: decoded });
-  } catch (err) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
-});
-
-app.get('/api/users/:username', async (req, res) => {
-  try {
-    const { username } = req.params;
-    if (!username) return res.status(400).json({ error: 'Username required' });
-
-    const result = await pool.query(
-      `SELECT id, username, profile_image FROM users WHERE username = $1`,
-      [username]
-    );
     
-    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    res.json(result.rows[0]);
+    const user = db.users.find(u => u.id === decoded.userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
+
+    res.json({ success: true, user: { id: user.id, username: user.username, profile_image: user.profile_image } });
   } catch (err) {
-    console.error('❌ GET /api/users/:username error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur POST /auth/verify:', err.message);
+    res.status(401).json({ error: 'Token invalide' });
   }
 });
 
-app.put('/api/users/:username/profile', async (req, res) => {
+app.put('/api/users/:userId/profile', (req, res) => {
   try {
-    const { username } = req.params;
+    const { userId } = req.params;
     const { profile_image } = req.body;
 
-    const result = await pool.query(
-      `UPDATE users SET profile_image = $1 WHERE username = $2 RETURNING id, username, profile_image`,
-      [profile_image, username]
-    );
+    const user = db.users.find(u => u.id === parseInt(userId));
+    if (!user) {
+      return res.status(404).json({ error: 'Utilisateur non trouvé' });
+    }
 
-    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    res.json(result.rows[0]);
+    user.profile_image = profile_image;
+    saveDatabase();
+
+    res.json({ success: true, user: { id: user.id, username: user.username, profile_image: user.profile_image } });
   } catch (err) {
-    console.error('❌ PUT /api/users/:username/profile error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('Erreur PUT /users/:userId/profile:', err.message);
+    res.status(500).json({ error: 'Erreur lors de la mise à jour du profil' });
   }
 });
 
-// 💬 SOCKET.IO
+// ===========================
+// 💬 SOCKET.IO - Temps réel
+// ===========================
+
 io.on('connection', (socket) => {
   console.log('✅ Socket connected:', socket.id);
 
-  socket.on('message', async (data) => {
+  socket.on('message', (data) => {
     try {
       const { channelId, author, content } = data;
-      await pool.query(
-        `INSERT INTO messages ("channelId", author, content) VALUES ($1, $2, $3)`,
-        [channelId, author, content]
-      );
-      io.emit('newMessage', { channelId, author, content, timestamp: new Date() });
+
+      const message = {
+        id: getNextId('messages'),
+        channelId,
+        author,
+        content,
+        timestamp: new Date().toISOString()
+      };
+
+      db.messages.push(message);
+      saveDatabase();
+
+      io.emit('newMessage', message);
     } catch (err) {
       console.error('❌ Socket message error:', err.message);
     }
@@ -327,31 +331,23 @@ io.on('connection', (socket) => {
   });
 });
 
-// 🚀 START SERVER
-async function start() {
-  try {
-    await initializeDatabase();
-    const PORT = process.env.PORT || 8080;
-    server.listen(PORT, () => {
-      console.log(`
+// ===========================
+// 🚀 DÉMARRER LE SERVEUR
+// ===========================
+
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+  console.log(`
 ╔════════════════════════════════════╗
 ║   Discord Clone - Server Running   ║
 ║   🌐 http://localhost:${PORT}      ║
-║   📊 PostgreSQL/Supabase (pg)      ║
-║   ✅ READY !                       ║
+║   📊 Database: JSON (Local Dev)    ║
+║   ✅ Ready!                        ║
 ╚════════════════════════════════════╝
-      `);
-    });
-  } catch (err) {
-    console.error('❌ Start error:', err);
-    process.exit(1);
-  }
-}
+  `);
+});
 
-start();
-
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down...');
-  await pool.end();
   process.exit(0);
 });

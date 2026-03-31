@@ -1,0 +1,39 @@
+{
+  "categories": [
+    {
+      "id": 1,
+      "name": "📋 Texte",
+      "createdAt": "2026-03-31T22:28:03.645Z"
+    },
+    {
+      "id": 2,
+      "name": "🎙️ Vocal",
+      "createdAt": "2026-03-31T22:28:03.645Z"
+    }
+  ],
+  "users": [],
+  "channels": [
+    {
+      "id": 1,
+      "name": "general",
+      "description": "Salon général pour discuter",
+      "categoryId": 1,
+      "createdAt": "2026-03-31T22:28:03.645Z"
+    },
+    {
+      "id": 2,
+      "name": "random",
+      "description": "Messages aléatoires",
+      "categoryId": 1,
+      "createdAt": "2026-03-31T22:28:03.645Z"
+    },
+    {
+      "id": 3,
+      "name": "aide",
+      "description": "Besoin d'aide?",
+      "categoryId": 1,
+      "createdAt": "2026-03-31T22:28:03.645Z"
+    }
+  ],
+  "messages": []
+}
